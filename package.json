@@ -1,0 +1,28 @@
+{
+  "name": "zakamichi-blog-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A Node-based crawler for Zakamichi group blogs, including Sakurazaka46, Hinatazaka46, Nogizaka46, and Bokuao.",
+  "main": "program.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"No test specified\" && exit 0"
+  },
+  "keywords": [
+    "crawler",
+    "blog",
+    "sakurazaka46",
+    "hinatazaka46",
+    "nogizaka46",
+    "bokuao"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "axios": "^1.13.2",
+    "dotenv": "^17.2.3",
+    "node-html-parser": "^7.0.1",
+    "p-limit": "^7.2.0"
+  }
+}
