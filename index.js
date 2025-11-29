@@ -17,7 +17,7 @@ const isBokuaoPollingActive = () => {
 
 async function runAll() {
     
-    if (!isPollingActive()) {
+   if (!isPollingActive()) {
         return;
     }
     // Logic: Run major groups always, Bokuao only at specific time (optional)

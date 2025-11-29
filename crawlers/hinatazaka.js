@@ -1,11 +1,11 @@
 import { BaseCrawler } from '../services/BaseCrawler.js';
-import { GROUPS, URLS } from '../config/constants.js';
+import { GROUPS, MEMBERS, URLS } from '../config/constants.js';
 import { fetchHtml } from '../utils/http.js';
-import { parseDateTime } from '../utils/date-parser.js';
+import { parseDateTime, DateFormats } from '../utils/date-parser.js';
 
 export class HinatazakaCrawler extends BaseCrawler {
     constructor() {
-        super(GROUPS.HINATAZAKA);
+        super(GROUPS.HINATAZAKA, MEMBERS.HINATAZAKA);
     }
 
     async fetchPageList(page) {
@@ -26,7 +26,7 @@ export class HinatazakaCrawler extends BaseCrawler {
         // Optimization: Hinatazaka list page often contains the full content.
         // But for safety/consistency with your old code, let's fetch the detail page
         // OR use the node passed from parsePageList if available.
-        
+
         const doc = await fetchHtml(url);
         if (!doc) return null;
 
@@ -41,7 +41,7 @@ export class HinatazakaCrawler extends BaseCrawler {
             ID: id,
             Title: title,
             Name: member,
-            DateTime: parseDateTime(date),
+            DateTime: parseDateTime(date, DateFormats[0]),
             ImageList: images,
             content: contentDiv ? contentDiv.innerHTML : ""
         };

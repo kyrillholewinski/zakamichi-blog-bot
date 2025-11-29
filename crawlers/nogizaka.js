@@ -1,11 +1,11 @@
 import { BaseCrawler } from '../services/BaseCrawler.js';
-import { GROUPS, URLS } from '../config/constants.js';
+import { GROUPS, MEMBERS, URLS } from '../config/constants.js';
 import { fetchJson } from '../utils/http.js';
-import { parseDateTime } from '../utils/date-parser.js';
+import { parseDateTime, DateFormats } from '../utils/date-parser.js';
 import { saveBlogContent } from '../utils/file-system.js';
 export class NogizakaCrawler extends BaseCrawler {
     constructor() {
-        super(GROUPS.NOGIZAKA);
+        super(GROUPS.NOGIZAKA,MEMBERS.NOGIZAKA);
         this.batchSize = 128; // API specific
     }
 
@@ -18,7 +18,7 @@ export class NogizakaCrawler extends BaseCrawler {
 
     async parsePageList(jsonObj) {
         if (!jsonObj || !jsonObj.data) return [];
-        
+
         return jsonObj.data.map(item => ({
             id: item.code, // ID is inside the JSON
             url: null,     // URL not needed for list parsing as data is in JSON
@@ -32,41 +32,41 @@ export class NogizakaCrawler extends BaseCrawler {
         // We need to access that raw item. 
         // NOTE: In BaseCrawler, we passed { id, url }. We need to adjust BaseCrawler to pass the whole object
         // OR we just cache the raw data in parsePageList.
-        
+
         // Since BaseCrawler abstraction calls `fetchBlogDetail(item.id, item.url)`,
         // we need a slight hack or store it. 
         // Actually, let's fetch it from the API specific raw data if possible.
         // But since we can't easily pass the `raw` through the generic BaseCrawler signature without changing it:
-        
+
         // *Better Approach for Nogizaka*:
         // The API gives us everything. We don't need a second HTTP request.
         // We can just construct the object here.
-        
+
         // However, BaseCrawler expects `fetchBlogDetail` to be called. 
         // We will misuse the `url` param to pass the data if we have to, 
         // OR we rely on the fact that I stored `raw` in `parsePageList` result.
-        
+
         // Let's assume BaseCrawler logic: `const detail = await this.fetchBlogDetail(item.id, item.url);`
         // We can fix BaseCrawler to pass `item` or we can find the item in memory.
-        
+
         // SIMPLEST FIX:
         // We will make `fetchBlogDetail` return `null` if we already have data, 
         // BUT BaseCrawler logic requires a return value to save.
-        
+
         // Let's just re-fetch or (smarter) use a temporary cache in the class.
         // But for now, let's assume we implement a `processPage` override for Nogizaka 
         // OR simplified: Just return the object based on the `raw` data attached to `item` in BaseCrawler.
-        
+
         // Re-implementing specific fetch logic since we don't have the `raw` data passed into this method signature 
         // without modifying BaseCrawler. 
-        
+
         // *Lazy fix:* Nogizaka crawler is efficient enough that we can just accept the architectural mismatch 
         // or just accept that `parsePageList` returned objects with `raw`.
         // Let's update `BaseCrawler.js` to pass the whole `item` object.
-        
+
         return null; // See note below
     }
-    
+
     // OVERRIDE processPage because Nogizaka is purely API based and different
     async processPage(pageNumber) {
         return this.limit(async () => {
@@ -84,17 +84,17 @@ export class NogizakaCrawler extends BaseCrawler {
                         ID: blogData.code,
                         Title: blogData.title,
                         Name: blogData.name.replace(/\s+/g, ''),
-                        DateTime: parseDateTime(blogData.date),
+                        DateTime: parseDateTime(blogData.date, DateFormats[2]),
                         ImageList: images,
                         content: blogData.text
                     };
 
                     await saveBlogContent(this.groupName, detail.ID, detail.content);
-                    delete detail.content;                
+                    delete detail.content;
                     this.existingBlogs[detail.ID] = detail;
                     this.newBlogsCount++;
                     hasNew = true;
-                     console.log(`[NEW]${this.groupName}|${detail.Name}|${detail.ID}|ImageCount: ${detail.ImageList.length}|${detail.Title}`);
+                    console.log(`[NEW]${this.groupName}|${detail.Name}|${detail.ID}|ImageCount: ${detail.ImageList.length}|${detail.Title}`);
                 }
             }
             return hasNew;

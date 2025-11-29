@@ -3,8 +3,9 @@ import os from 'os';
 import { loadBlogStatus, saveBlogStatus, saveBlogContent } from '../utils/file-system.js';
 
 export class BaseCrawler {
-    constructor(groupName) {
+    constructor(groupName,memberMap) {
         this.groupName = groupName;
+        this.memberMap = memberMap
         this.limit = pLimit(os.cpus().length);
         this.existingBlogs = {};
         this.newBlogsCount = 0;
@@ -52,10 +53,9 @@ export class BaseCrawler {
 
             page += 5;
         }
-
         if (this.newBlogsCount > 0) {
             console.log(`💾 Saving ${this.newBlogsCount} new blogs for ${this.groupName}...`);
-            await saveBlogStatus(this.groupName, this.existingBlogs);
+            await saveBlogStatus(this.groupName, this.existingBlogs, this.memberMap);
         } else {
             console.log(`✅ Up to date.`);
         }
