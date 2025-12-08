@@ -1,12 +1,12 @@
-import { BaseCrawler } from '../services/BaseCrawler.js';
+import { BaseCrawler } from './base.js';
 import { GROUPS, MEMBERS, URLS } from '../config/constants.js';
 import { fetchJson } from '../utils/http.js';
 import { parseDateTime, DateFormats } from '../utils/date-parser.js';
 import { saveBlogContent } from '../utils/file-system.js';
 export class NogizakaCrawler extends BaseCrawler {
     constructor() {
-        super(GROUPS.NOGIZAKA,MEMBERS.NOGIZAKA);
-        this.batchSize = 128; // API specific
+        super(GROUPS.NOGIZAKA, MEMBERS.NOGIZAKA);
+        this.batchSize = 1024; // API specific
     }
 
     async fetchPageList(pageIndex) {
@@ -89,7 +89,7 @@ export class NogizakaCrawler extends BaseCrawler {
                         content: blogData.text
                     };
 
-                    await saveBlogContent(this.groupName, detail.ID, detail.content);
+                    await saveBlogContent(this.groupName, blogData.code, blogData.text);
                     delete detail.content;
                     this.existingBlogs[detail.ID] = detail;
                     this.newBlogsCount++;

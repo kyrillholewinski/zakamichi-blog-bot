@@ -1,4 +1,4 @@
-import { BaseCrawler } from '../services/BaseCrawler.js';
+import { BaseCrawler } from './base.js';
 import { GROUPS, URLS } from '../config/constants.js';
 import { fetchHtml } from '../utils/http.js';
 import { parseDateTime, DateFormats } from '../utils/date-parser.js';
@@ -6,7 +6,7 @@ import 'dotenv/config';
 
 export class BokuaoCrawler extends BaseCrawler {
     constructor() {
-        super(GROUPS.BOKUAO,GROUPS.BOKUAO);
+        super(GROUPS.BOKUAO, GROUPS.BOKUAO);
         this.cookies = process.env.BOKUAO_COOKIE;
     }
 
@@ -34,7 +34,7 @@ export class BokuaoCrawler extends BaseCrawler {
 
         const writerP = doc.querySelector("p.writer");
         const titleP = doc.querySelector("p.tit");
-        const dateT = doc.querySelector("time.date");
+        const dateT = doc.querySelector("p.date");
         const dateStr = dateT ? dateT.innerText.trim() : "";
 
         return {

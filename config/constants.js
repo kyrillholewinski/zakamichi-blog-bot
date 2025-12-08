@@ -1,14 +1,11 @@
 import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const PROJECT_ROOT = path.resolve(__dirname, '../');
 
 export const PATHS = {
-    EXPORT: path.join(PROJECT_ROOT, 'Export'),
-    RECORD: path.join(PROJECT_ROOT, 'record'),
-    BLOG_CONTENT: path.join(PROJECT_ROOT, 'blogContent'),
-    getGroupDir: (groupName) => path.join(PROJECT_ROOT, 'record', groupName)
+    EXPORT: 'Export',
+    RECORD: 'record',
+    BLOG_CONTENT: 'blogContent',
+    BLOG_STATUS: 'BlogStatus.JSON',
+    getGroupDir: (groupName) => path.join('record', groupName)
 };
 
 export const GROUPS = {

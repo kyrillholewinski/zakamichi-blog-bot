@@ -13,9 +13,13 @@ export async function fetchHtml(url, cookies = null) {
     try {
         const config = {};
         if (cookies) config.headers = { 'Cookie': cookies };
-        
         const { data } = await client.get(url, config);
-        return htmlParser.parse(data);
+        return htmlParser.parse(data, {
+            blockTextElements: {
+                script: true,
+                style: true
+            }
+        });
     } catch (err) {
         console.error(`[HTTP] Error fetching ${url}: ${err.message}`);
         return null;

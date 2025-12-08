@@ -1,4 +1,4 @@
-import { BaseCrawler } from '../services/BaseCrawler.js';
+import { BaseCrawler } from './base.js';
 import { GROUPS, MEMBERS, URLS } from '../config/constants.js';
 import { fetchHtml } from '../utils/http.js';
 import { parseDateTime, DateFormats } from '../utils/date-parser.js';

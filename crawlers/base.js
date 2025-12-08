@@ -3,7 +3,7 @@ import os from 'os';
 import { loadBlogStatus, saveBlogStatus, saveBlogContent } from '../utils/file-system.js';
 
 export class BaseCrawler {
-    constructor(groupName,memberMap) {
+    constructor(groupName, memberMap) {
         this.groupName = groupName;
         this.memberMap = memberMap
         this.limit = pLimit(os.cpus().length);
@@ -74,13 +74,10 @@ export class BaseCrawler {
                 for (const item of items) {
                     if (!this.existingBlogs[item.id]) {
                         // It's new! Fetch details
-
                         const detail = await this.fetchBlogDetail(item.id, item.url);
-
                         if (detail) {
                             // Save HTML immediately
                             await saveBlogContent(this.groupName, item.id, detail.content);
-
                             // Remove heavy content before saving to JSON manifest
                             delete detail.content;
                             this.existingBlogs[item.id] = detail;

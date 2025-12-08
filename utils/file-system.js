@@ -4,7 +4,7 @@ import { PATHS } from '../config/constants.js';
 
 export async function loadBlogStatus(groupName) {
     const dir = PATHS.getGroupDir(groupName);
-    const filePath = path.join(dir, 'BlogStatus.json');
+    const filePath = path.join(dir, PATHS.BLOG_STATUS);
     try {
         await fs.promises.access(filePath);
         const data = await fs.promises.readFile(filePath, 'utf-8');
@@ -87,7 +87,7 @@ export async function saveBlogStatus(groupName, blogMap, groupMembersMap) {
     // 4. Convert the map's values back to an array for the final output.
     const finalMembersArray = Array.from(newMembersMap.values());
 
-    const filePath = path.join(dir, 'BlogStatus.json');
+    const filePath = path.join(dir, PATHS.BLOG_STATUS);
     await fs.promises.writeFile(filePath, JSON.stringify(finalMembersArray, null, 2), 'utf-8');
 }
 
