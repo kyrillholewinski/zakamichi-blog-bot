@@ -10,7 +10,7 @@ export class BaseCrawler {
         this.existingBlogs = {};
         this.newBlogsCount = 0;
         this.maxPages = 100; // Safe limit
-        this.stopOnConsecutiveExisting = 5; // Stop if 5 pages have no new data
+        this.stopOnConsecutiveExisting = 1; // Stop if 5 pages have no new data
     }
 
     // Abstract methods to override
@@ -32,7 +32,7 @@ export class BaseCrawler {
         while (isRunning && page < this.maxPages) {
             // Process batches of pages (e.g., 5 pages in parallel)
             const batchPromises = [];
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 1; i++) {
                 batchPromises.push(this.processPage(page + i));
             }
 
@@ -41,7 +41,7 @@ export class BaseCrawler {
             // Check results to decide if we stop
             const anyNewData = results.some(r => r === true);
             if (!anyNewData) {
-                noNewDataCount += 5;
+                noNewDataCount += 1;
             } else {
                 noNewDataCount = 0;
             }
@@ -51,7 +51,7 @@ export class BaseCrawler {
                 isRunning = false;
             }
 
-            page += 5;
+            page += 1;
         }
         if (this.newBlogsCount > 0) {
             console.log(`💾 Saving ${this.newBlogsCount} new blogs for ${this.groupName}...`);

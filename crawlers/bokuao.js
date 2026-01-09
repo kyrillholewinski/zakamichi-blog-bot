@@ -1,13 +1,12 @@
 import { BaseCrawler } from './base.js';
-import { GROUPS, URLS } from '../config/constants.js';
+import { GROUPS, URLS, BOKUAO_COOKIE } from '../config/constants.js';
 import { fetchHtml } from '../utils/http.js';
 import { parseDateTime, DateFormats } from '../utils/date-parser.js';
-import 'dotenv/config';
 
 export class BokuaoCrawler extends BaseCrawler {
     constructor() {
         super(GROUPS.BOKUAO, GROUPS.BOKUAO);
-        this.cookies = process.env.BOKUAO_COOKIE;
+        this.cookies = BOKUAO_COOKIE;
     }
 
     async fetchPageList(page) {

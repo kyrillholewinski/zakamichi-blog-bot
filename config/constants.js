@@ -1,5 +1,12 @@
 import path from 'path';
 
+import {loadEnvFile} from 'node:process';
+loadEnvFile();
+
+export const POLLING_INTERVAL_MS = (parseInt(process.env.POLLING_INTERVAL_MS) || 900) * 1000;      
+
+export const BOKUAO_COOKIE = process.env.BOKUAO_COOKIE || '';
+
 export const PATHS = {
     EXPORT: 'Export',
     RECORD: 'record',
