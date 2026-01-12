@@ -21,8 +21,10 @@
   "dependencies": {
     "archiver": "^7.0.1",
     "axios": "^1.13.2",
-    "dotenv": "^17.2.3",
     "node-html-parser": "^7.0.1",
-    "p-limit": "^7.2.0"
+    "p-limit": "^7.2.0",
+    "openai": "^6.15.0",
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@google/genai": "^1.35.0"
   }
 }

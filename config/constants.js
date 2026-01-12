@@ -1,16 +1,29 @@
 import path from 'path';
 
-import {loadEnvFile} from 'node:process';
+import { loadEnvFile } from 'node:process';
 loadEnvFile();
 
-export const POLLING_INTERVAL_MS = (parseInt(process.env.POLLING_INTERVAL_MS) || 900) * 1000;      
+export const POLLING_INTERVAL_MS = (parseInt(process.env.POLLING_INTERVAL_MS) || 900) * 1000;
 
 export const BOKUAO_COOKIE = process.env.BOKUAO_COOKIE || '';
+
+export const ENABLE_TRANSLATION = process.env.ENABLE_TRANSLATION === 'true';
+
+export const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+export const GEMINI_API_MODEL_1 = process.env.GEMINI_API_MODEL_1;
+export const GEMINI_API_MODEL_2 = process.env.GEMINI_API_MODEL_2;
+export const GEMINI_API_MODEL_3 = process.env.GEMINI_API_MODEL_3;
+
+export const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+export const CLAUDE_API_MODEL = process.env.CLAUDE_API_MODEL;
+export const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+export const OPENAI_API_MODEL = process.env.OPENAI_API_MODEL;
 
 export const PATHS = {
     EXPORT: 'Export',
     RECORD: 'record',
     BLOG_CONTENT: 'blogContent',
+    BLOG_CONTENT_TC: 'blogContent_TC',
     BLOG_STATUS: 'BlogStatus.JSON',
     getGroupDir: (groupName) => path.join('record', groupName)
 };
