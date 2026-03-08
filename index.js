@@ -9,14 +9,14 @@ import { POLLING_INTERVAL_MS, PATHS, ENABLE_TRANSLATION } from './config/constan
 import { loadBlogStatus } from './utils/file-system.js';
 
 const isPollingActive = () => {
-    const hour = (new Date().getUTCHours() + 8) % 24
+    const hour = (new Date().getUTCHours() + 9) % 24
     return hour > 8
 };
 
 const isBokuaoPollingActive = () => {
-    const hour = (new Date().getUTCHours() + 8) % 24
+    const hour = (new Date().getUTCHours() + 9) % 24
     console.log('Bokuao Polling Hour:', hour);
-    return hour === 21
+    return hour === 10
 };
 
 async function translateExistingBlogContent() {
