@@ -10,7 +10,7 @@ import { loadBlogStatus } from './utils/file-system.js';
 
 const isPollingActive = () => {
     const hour = (new Date().getUTCHours() + 9) % 24
-    return hour > 8
+    return hour > 7
 };
 
 const isBokuaoPollingActive = () => {

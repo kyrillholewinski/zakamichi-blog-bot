@@ -19,12 +19,12 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "archiver": "^7.0.1",
-    "axios": "^1.13.6",
-    "node-html-parser": "^7.0.1",
-    "p-limit": "^7.3.0",
+    "archiver": "^8.0.0",
+    "axios": "^1.20.0",
+    "node-html-parser": "^9.0.2",
+    "p-limit": "^7.3.1",
     "openai": "^6.27.0",
-    "@anthropic-ai/sdk": "^0.78.0",
-    "@google/genai": "^1.44.0"
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@google/genai": "^2.19.0"
   }
 }
