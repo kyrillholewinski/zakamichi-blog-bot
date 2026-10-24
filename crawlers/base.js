@@ -1,6 +1,7 @@
 import pLimit from 'p-limit';
 import os from 'os';
 import { loadBlogStatus, saveBlogStatus, saveBlogContent } from '../utils/file-system.js';
+import { broadcastBlogs } from '../services/broadcaster.js';
 
 export class BaseCrawler {
     constructor(groupName, memberMap) {
@@ -9,6 +10,8 @@ export class BaseCrawler {
         this.limit = pLimit(os.cpus().length);
         this.existingBlogs = {};
         this.newBlogsCount = 0;
+        // Details of this run's new posts, handed to the broadcaster once crawling finishes.
+        this.newBlogs = [];
         this.maxPages = 100; // Safe limit
         this.stopOnConsecutiveExisting = 1; // Stop if 5 pages have no new data
     }
@@ -21,6 +24,7 @@ export class BaseCrawler {
     async run() {
         console.log(`\n--- 🚀 Starting ${this.groupName} ---`);
         this.existingBlogs = await loadBlogStatus(this.groupName);
+        this.newBlogs = [];
         const startCount = Object.keys(this.existingBlogs).length;
         console.log(`Loaded ${this.groupName} ${startCount} existing blogs.`);
 
@@ -56,6 +60,9 @@ export class BaseCrawler {
         if (this.newBlogsCount > 0) {
             console.log(`💾 Saving ${this.newBlogsCount} new blogs for ${this.groupName}...`);
             await saveBlogStatus(this.groupName, this.existingBlogs, this.memberMap);
+            // Broadcast after the manifest is on disk: a crash mid-send then resumes
+            // from BroadcastStatus.JSON instead of re-crawling everything.
+            await broadcastBlogs(this.groupName, this.newBlogs);
         } else {
             console.log(`✅ Up to date.`);
         }
@@ -81,6 +88,7 @@ export class BaseCrawler {
                             // Remove heavy content before saving to JSON manifest
                             delete detail.content;
                             this.existingBlogs[item.id] = detail;
+                            this.newBlogs.push(detail);
                             this.newBlogsCount++;
                             hasNew = true;
                             console.log(`[NEW]${this.groupName}|${detail.Name}|${detail.ID}|ImageCount: ${detail.ImageList.length}|${detail.Title}`);

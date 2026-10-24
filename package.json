@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "description": "A Node-based crawler for Zakamichi group blogs, including Sakurazaka46, Hinatazaka46, Nogizaka46, and Bokuao.",
-  "main": "program.js",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "echo \"No test specified\" && exit 0"
@@ -14,17 +14,20 @@
     "sakurazaka46",
     "hinatazaka46",
     "nogizaka46",
-    "bokuao"
+    "bokuao",
+    "telegram",
+    "translation"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@google/genai": "^2.21.0",
     "archiver": "^8.0.0",
     "axios": "^1.20.0",
+    "form-data": "^4.0.4",
     "node-html-parser": "^9.0.2",
-    "p-limit": "^7.3.1",
     "openai": "^6.27.0",
-    "@anthropic-ai/sdk": "^0.122.0",
-    "@google/genai": "^2.19.0"
+    "p-limit": "^7.3.1"
   }
 }

@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "_comment": "Broadcast + translation configuration. Copy to config/config.json and fill in your bot tokens / chat ids. Edits are hot-reloaded on the next polling cycle - no restart or code change required.",
+
+  "defaults": {
+    "enabled": true,
+    "translation": {
+      "enabled": true,
+      "provider": "gemini",
+      "thinking_level": "middle",
+      "target_language": "Traditional Chinese (Taiwan)",
+      "translate_title": true,
+      "translate_body": true,
+      "translate_image_captions": true
+    },
+    "message": {
+      "parse_mode": "HTML",
+      "show_original": false,
+      "show_footer": true,
+      "show_image_markers": true,
+      "attribution": "",
+      "max_media_per_group": 10,
+      "send_media": true
+    }
+  },
+
+  "groups": [
+    {
+      "name": "Hinatazaka46",
+      "display_name": "日向坂46",
+      "enabled": false,
+      "telegram_bot_token": "",
+      "telegram_chat_id": [],
+      "translate_glossary": {
+        "こさかな": "小坂菜緒",
+        "ぱる": "陽世"
+      },
+      "translation": {},
+      "message": {},
+      "members": [
+        {
+          "name": "金村美玖",
+          "enabled": true,
+          "telegram_chat_id": ["@miku_osushi"],
+          "telegram_bot_token": ""
+        },
+        {
+          "name": "松田好花",
+          "enabled": false
+        }
+      ],
+      "categories": [
+        {
+          "name": "五期生リレー",
+          "enabled": true,
+          "match": { "title_contains": ["リレー"] },
+          "telegram_chat_id": []
+        }
+      ]
+    },
+
+    {
+      "name": "Sakurazaka46",
+      "display_name": "櫻坂46",
+      "enabled": false,
+      "telegram_bot_token": "",
+      "telegram_chat_id": [],
+      "members": [],
+      "categories": []
+    },
+
+    {
+      "name": "Nogizaka46",
+      "display_name": "乃木坂46",
+      "enabled": false,
+      "telegram_bot_token": "",
+      "telegram_chat_id": [],
+      "members": [],
+      "categories": []
+    },
+
+    {
+      "name": "Bokuao",
+      "display_name": "僕が見たかった青空",
+      "enabled": false,
+      "telegram_bot_token": "",
+      "telegram_chat_id": [],
+      "members": [],
+      "categories": []
+    }
+  ]
+}

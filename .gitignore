@@ -119,3 +119,6 @@ Thumbs.db
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+
+# Local broadcast configuration (contains Telegram bot tokens)
+config/config.json

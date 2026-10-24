@@ -39,6 +39,7 @@ export class HinatazakaCrawler extends BaseCrawler {
 
         return {
             ID: id,
+            Url: url,
             Title: title,
             Name: member,
             DateTime: parseDateTime(date, DateFormats[0]),

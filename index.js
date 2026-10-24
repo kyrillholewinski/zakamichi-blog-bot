@@ -4,8 +4,9 @@ import { HinatazakaCrawler } from './crawlers/hinatazaka.js';
 import { SakurazakaCrawler } from './crawlers/sakurazaka.js';
 import { NogizakaCrawler } from './crawlers/nogizaka.js';
 import { BokuaoCrawler } from './crawlers/bokuao.js';
-import { translateMessage } from './crawlers/translate.js';
-import { POLLING_INTERVAL_MS, PATHS, ENABLE_TRANSLATION } from './config/constants.js';
+import { translateMessage } from './services/translate.js';
+import { POLLING_INTERVAL_MS, PATHS, ENABLE_TRANSLATION, ENABLE_BROADCAST } from './config/constants.js';
+import { loadChannelConfig } from './config/channels.js';
 import { loadBlogStatus } from './utils/file-system.js';
 
 const isPollingActive = () => {
@@ -107,6 +108,9 @@ async function runAll() {
         if (ENABLE_TRANSLATION) await translateExistingBlogContent();
     } else {
         console.log('Polling active. Skipping translation.');
+        // Pick up config/config.json edits before the crawlers reach the broadcaster,
+        // so channel changes take effect from this cycle onwards.
+        if (ENABLE_BROADCAST) loadChannelConfig();
         // Logic: Run major groups always, Bokuao only at specific time (optional)
         const crawlers = [
             new HinatazakaCrawler(),

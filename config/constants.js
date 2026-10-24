@@ -9,6 +9,12 @@ export const BOKUAO_COOKIE = process.env.BOKUAO_COOKIE || '';
 
 export const ENABLE_TRANSLATION = process.env.ENABLE_TRANSLATION === 'true';
 
+// Master kill switch for Telegram broadcasting. Per-group/member/category toggles
+// live in CONFIG_FILE_NAME so channels can be changed without touching code.
+export const ENABLE_BROADCAST = process.env.ENABLE_BROADCAST !== 'false';
+
+export const CONFIG_FILE_NAME = process.env.CONFIG_FILE_NAME || 'config/config.json';
+
 export const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 export const GEMINI_API_MODEL_1 = process.env.GEMINI_API_MODEL_1;
 export const GEMINI_API_MODEL_2 = process.env.GEMINI_API_MODEL_2;
@@ -25,6 +31,7 @@ export const PATHS = {
     BLOG_CONTENT: 'blogContent',
     BLOG_CONTENT_TC: 'blogContent_TC',
     BLOG_STATUS: 'BlogStatus.JSON',
+    BROADCAST_STATUS: 'BroadcastStatus.JSON',
     getGroupDir: (groupName) => path.join('record', groupName)
 };
 
@@ -40,6 +47,22 @@ export const URLS = {
     SAKURAZAKA: 'https://sakurazaka46.com',
     NOGIZAKA: 'https://nogizaka46.com',
     BOKUAO: 'https://bokuao.com'
+};
+
+// Site origin per group, used to absolutize relative media URLs found in blog HTML.
+export const GROUP_BASE_URLS = {
+    [GROUPS.HINATAZAKA]: URLS.HINATAZAKA,
+    [GROUPS.SAKURAZAKA]: URLS.SAKURAZAKA,
+    [GROUPS.NOGIZAKA]: URLS.NOGIZAKA,
+    [GROUPS.BOKUAO]: URLS.BOKUAO
+};
+
+// Fallback permalinks for posts crawled before the detail URL was recorded.
+export const BLOG_URL_TEMPLATES = {
+    [GROUPS.HINATAZAKA]: (id) => `${URLS.HINATAZAKA}/s/official/diary/detail/${id}?ima=0000&cd=member`,
+    [GROUPS.SAKURAZAKA]: (id) => `${URLS.SAKURAZAKA}/s/s46/diary/detail/${id}?ima=0000&cd=blog`,
+    [GROUPS.NOGIZAKA]: (id) => `${URLS.NOGIZAKA}/s/n46/diary/detail/${id}?ima=0000&cd=MEMBER`,
+    [GROUPS.BOKUAO]: (id) => `${URLS.BOKUAO}/blog/detail/${id}`
 };
 
 export const MEMBERS = {

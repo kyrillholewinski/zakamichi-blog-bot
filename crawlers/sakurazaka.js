@@ -38,6 +38,7 @@ export class SakurazakaCrawler extends BaseCrawler {
 
         return {
             ID: id,
+            Url: url,
             Title: doc.querySelector("h3.title")?.innerText.trim(),
             Name: doc.querySelector(".name")?.innerText.trim().replace(/\s/g, ""),
             DateTime: parseDateTime(foot.querySelector(".date")?.innerText, DateFormats[4]),

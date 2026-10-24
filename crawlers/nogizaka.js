@@ -1,5 +1,5 @@
 import { BaseCrawler } from './base.js';
-import { GROUPS, MEMBERS, URLS } from '../config/constants.js';
+import { GROUPS, MEMBERS, URLS, BLOG_URL_TEMPLATES } from '../config/constants.js';
 import { fetchJson } from '../utils/http.js';
 import { parseDateTime, DateFormats } from '../utils/date-parser.js';
 import { saveBlogContent } from '../utils/file-system.js';
@@ -82,6 +82,7 @@ export class NogizakaCrawler extends BaseCrawler {
 
                     const detail = {
                         ID: blogData.code,
+                        Url: blogData.link || BLOG_URL_TEMPLATES[GROUPS.NOGIZAKA](blogData.code),
                         Title: blogData.title,
                         Name: blogData.name.replace(/\s+/g, ''),
                         DateTime: parseDateTime(blogData.date, DateFormats[2]),
@@ -92,6 +93,7 @@ export class NogizakaCrawler extends BaseCrawler {
                     await saveBlogContent(this.groupName, blogData.code, blogData.text);
                     delete detail.content;
                     this.existingBlogs[detail.ID] = detail;
+                    this.newBlogs.push(detail);
                     this.newBlogsCount++;
                     hasNew = true;
                     console.log(`[NEW]${this.groupName}|${detail.Name}|${detail.ID}|ImageCount: ${detail.ImageList.length}|${detail.Title}`);

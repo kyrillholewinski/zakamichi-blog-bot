@@ -38,6 +38,7 @@ export class BokuaoCrawler extends BaseCrawler {
 
         return {
             ID: id,
+            Url: url,
             Title: titleP ? titleP.innerText.trim() : "",
             Name: writerP ? writerP.innerText.trim().replace(/\s/g, "") : "",
             DateTime: parseDateTime(dateStr, DateFormats[3]),
