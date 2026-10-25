@@ -15,15 +15,18 @@ export const ENABLE_BROADCAST = process.env.ENABLE_BROADCAST !== 'false';
 
 export const CONFIG_FILE_NAME = process.env.CONFIG_FILE_NAME || 'config/config.json';
 
+// Admin panel. Both must be set for the panel to start; every update from any
+// other Telegram user is dropped without a reply.
+export const ADMIN_BOT_TOKEN = process.env.ADMIN_BOT_TOKEN || '';
+export const OWNER_USER_ID = (process.env.OWNER_USER_ID || '').trim();
+
+// Starting value for the backfill translation quota; the admin panel can change it.
+export const DAILY_TRANSLATION_QUOTA = parseInt(process.env.DAILY_TRANSLATION_QUOTA, 10) || 50;
+
 export const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 export const GEMINI_API_MODEL_1 = process.env.GEMINI_API_MODEL_1;
 export const GEMINI_API_MODEL_2 = process.env.GEMINI_API_MODEL_2;
 export const GEMINI_API_MODEL_3 = process.env.GEMINI_API_MODEL_3;
-
-export const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
-export const CLAUDE_API_MODEL = process.env.CLAUDE_API_MODEL;
-export const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-export const OPENAI_API_MODEL = process.env.OPENAI_API_MODEL;
 
 export const PATHS = {
     EXPORT: 'Export',
@@ -32,6 +35,8 @@ export const PATHS = {
     BLOG_CONTENT_TC: 'blogContent_TC',
     BLOG_STATUS: 'BlogStatus.JSON',
     BROADCAST_STATUS: 'BroadcastStatus.JSON',
+    ADMIN_STATE: path.join('record', 'admin-state.json'),
+    BROADCAST_QUEUE: path.join('record', 'broadcast-queue.json'),
     getGroupDir: (groupName) => path.join('record', groupName)
 };
 

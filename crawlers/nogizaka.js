@@ -3,6 +3,7 @@ import { GROUPS, MEMBERS, URLS, BLOG_URL_TEMPLATES } from '../config/constants.j
 import { fetchJson } from '../utils/http.js';
 import { parseDateTime, DateFormats } from '../utils/date-parser.js';
 import { saveBlogContent } from '../utils/file-system.js';
+import { getMemberSettings } from '../services/admin-state.js';
 export class NogizakaCrawler extends BaseCrawler {
     constructor() {
         super(GROUPS.NOGIZAKA, MEMBERS.NOGIZAKA);
@@ -90,10 +91,12 @@ export class NogizakaCrawler extends BaseCrawler {
                         content: blogData.text
                     };
 
-                    await saveBlogContent(this.groupName, blogData.code, blogData.text);
+                    if (getMemberSettings(this.groupName, detail.Name).archive) {
+                        await saveBlogContent(this.groupName, blogData.code, blogData.text);
+                    }
                     delete detail.content;
                     this.existingBlogs[detail.ID] = detail;
-                    this.newBlogs.push(detail);
+                    this.newBlogs.push({ ...detail, content: blogData.text });
                     this.newBlogsCount++;
                     hasNew = true;
                     console.log(`[NEW]${this.groupName}|${detail.Name}|${detail.ID}|ImageCount: ${detail.ImageList.length}|${detail.Title}`);

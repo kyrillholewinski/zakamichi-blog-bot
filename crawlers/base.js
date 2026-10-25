@@ -2,6 +2,7 @@ import pLimit from 'p-limit';
 import os from 'os';
 import { loadBlogStatus, saveBlogStatus, saveBlogContent } from '../utils/file-system.js';
 import { broadcastBlogs } from '../services/broadcaster.js';
+import { getMemberSettings } from '../services/admin-state.js';
 
 export class BaseCrawler {
     constructor(groupName, memberMap) {
@@ -83,12 +84,16 @@ export class BaseCrawler {
                         // It's new! Fetch details
                         const detail = await this.fetchBlogDetail(item.id, item.url);
                         if (detail) {
-                            // Save HTML immediately
-                            await saveBlogContent(this.groupName, item.id, detail.content);
+                            const html = detail.content;
+                            // Save HTML immediately, unless archiving is off for this member
+                            if (getMemberSettings(this.groupName, detail.Name).archive) {
+                                await saveBlogContent(this.groupName, item.id, html);
+                            }
                             // Remove heavy content before saving to JSON manifest
                             delete detail.content;
                             this.existingBlogs[item.id] = detail;
-                            this.newBlogs.push(detail);
+                            // The broadcaster gets the HTML in memory, since it may not be on disk.
+                            this.newBlogs.push({ ...detail, content: html });
                             this.newBlogsCount++;
                             hasNew = true;
                             console.log(`[NEW]${this.groupName}|${detail.Name}|${detail.ID}|ImageCount: ${detail.ImageList.length}|${detail.Title}`);

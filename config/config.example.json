@@ -6,7 +6,6 @@
     "enabled": true,
     "translation": {
       "enabled": true,
-      "provider": "gemini",
       "thinking_level": "middle",
       "target_language": "Traditional Chinese (Taiwan)",
       "translate_title": true,

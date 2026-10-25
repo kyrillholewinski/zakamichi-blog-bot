@@ -4,6 +4,7 @@
 
 爬取坂道系列團體的部落格（櫻坂46、日向坂46、乃木坂46、僕が見たかった青空），翻譯每一篇新文章，
 並依照 `zakamichi-message-bot` 的訊息格式推送到 Telegram 頻道。
+執行期間可透過只限擁有者使用的 Telegram 管理面板，控制推送目標、翻譯與推送。
 
 ## 快速開始
 
@@ -13,8 +14,8 @@
    npm install
    ```
 
-2. 在專案根目錄建立 `.env`（請參考[環境變數](#環境變數)）。至少需要設定一組翻譯服務的金鑰，
-   例如 `GEMINI_API_KEY` 和 `GEMINI_API_MODEL_1`。
+2. 在專案根目錄建立 `.env`（請參考[環境變數](#環境變數)）。至少需要設定
+   `GEMINI_API_KEY` 和 `GEMINI_API_MODEL_1`。
 
 3. 從範本建立推送設定檔，填入 Bot Token 與頻道 ID，並把要推送的團體設為 `"enabled": true`：
 
@@ -22,7 +23,9 @@
    cp config/config.example.json config/config.json
    ```
 
-4. 啟動：
+4. 選用：設定 `ADMIN_BOT_TOKEN` 與 `OWNER_USER_ID` 以啟用[管理面板](#管理面板)。
+
+5. 啟動：
 
    ```bash
    npm start
@@ -39,44 +42,56 @@ Bot 必須是每個目標頻道的管理員，並具有發送訊息的權限。
 ## 執行時段
 
 程式啟動時會先執行一次，之後每 `POLLING_INTERVAL_MS` 秒執行一次（預設 900 秒）。以下時間皆為日本時間（JST）。
+若上一輪尚未結束，下一輪會直接略過。
 
 | 時間（JST） | 執行內容 |
 | --- | --- |
+| 每一輪 | 重試推送佇列中等待中的文章 |
 | 08:00 – 23:59 | 爬取日向坂46、櫻坂46、乃木坂46，並推送新文章 |
 | 10:00 – 10:59 | 額外爬取僕が見たかった青空（Bokuao） |
-| 00:00 – 07:59 | 夜間作業：把已儲存的 HTML 翻譯到 `blogContent_TC/`（需設定 `ENABLE_TRANSLATION=true`） |
+| 00:00 – 07:59 | 補翻譯：把已存檔的 HTML 翻譯到 `blogContent_TC/`，由新到舊，直到用完每日額度（需設定 `ENABLE_TRANSLATION=true`） |
+| UTC 00:00（JST 09:00） | 重設每日補翻譯額度 |
 
 ## 處理流程
 
 ```
-爬蟲 → blogContent/<團體>/<id>.html
+爬蟲 → blogContent/<團體>/<id>.html             （成員關閉存檔時略過）
      → blog-content.js     將 HTML 解析為依序排列的文字／圖片／影片區塊
      → translate.js        翻譯標題、內文與圖片說明
      → message-builder.js  組成標頭／內文／頁尾，並依 Telegram 長度限制分段
      → telegram.js         發送相簿與後續文字訊息
-     → record/<團體>/BroadcastStatus.JSON
+     → record/<團體>/BroadcastStatus.JSON       （發送失敗或暫停中的文章 → 推送佇列）
 ```
 
 ## 專案結構
 
 ```
-index.js                     排程：輪詢週期與夜間翻譯作業
+index.js                     排程：輪詢週期、補翻譯、佇列重試
 config/
   constants.js               環境變數、路徑、各團體網址、成員名單
-  channels.js                讀取 config/config.json 並決定推送目標
+  channels.js                讀取 config/config.json 與管理面板設定，決定推送目標
   config.example.json        推送設定範本（納入版本控制）
   config.json                你的推送設定（已加入 .gitignore，內含 Bot Token）
 crawlers/                    各團體的爬蟲，皆繼承自 base.js
 services/
   blog-content.js            HTML → 依序排列的區塊；辨識圖片說明
-  translate.js               Gemini／Claude／OpenAI 翻譯
+  translate.js               Gemini 翻譯
   message-builder.js         Telegram 圖片說明與訊息
   telegram.js                Bot API 用戶端
-  broadcaster.js             翻譯 → 排版 → 發送，並記錄已推送的文章
+  broadcaster.js             翻譯 → 排版 → 發送，記錄推送結果並重試佇列
+  broadcast-queue.js         等待推送的文章
+  backfill.js                依額度補翻譯存檔、文章索引、統計
+  admin-state.js             管理面板狀態：開關、額度、成員設定
+  scheduler.js               UTC 00:00 重設額度
+  admin/
+    auth.js                  僅限擁有者的檢查與頻率限制
+    views.js                 管理面板畫面與內嵌按鈕
+    bot.js                   長輪詢、按鈕處理、頻道 ID 輸入
 utils/                       HTTP、檔案系統、日期解析等工具
 blogContent/                 各團體的原始文章 HTML
-blogContent_TC/              夜間作業產生的翻譯版文章 HTML
-record/                      各團體的 BlogStatus.JSON 與 BroadcastStatus.JSON
+blogContent_TC/              補翻譯產生的翻譯版文章 HTML
+record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON、
+                             admin-state.json、broadcast-queue.json
 ```
 
 ## 訊息格式
@@ -101,6 +116,74 @@ record/                      各團體的 BlogStatus.JSON 與 BroadcastStatus.JS
 排版好的說明文字會放在**第一組相簿的第一個項目**上。如果文章超過 Telegram 圖片說明的 1024 字元上限，
 相簿只保留標頭（放得下時也包含頁尾），內文則以最多 4096 字元的獨立訊息接續發送。分段時不會把 HTML 標籤切成兩半。
 
+## 管理面板
+
+一個只回應你的 Telegram Bot。在私訊中傳送 `/admin` 即可開啟管理面板。
+
+### 設定
+
+1. 透過 [@BotFather](https://t.me/BotFather) 建立 Bot（也可沿用推送用的 Bot），把 Token 填入 `ADMIN_BOT_TOKEN`。
+2. 取得你的 Telegram 數字使用者 ID（例如私訊 [@userinfobot](https://t.me/userinfobot)），填入 `OWNER_USER_ID`。
+3. 重新啟動程式，與 Bot 開啟私訊並傳送 `/admin`。
+
+管理面板使用長輪詢，不需要 Webhook 或對外開放連接埠。如果該 Bot 已設定 Webhook，Telegram 會拒絕輪詢，
+記錄檔中會顯示原因；請先移除 Webhook。
+
+### 安全性
+
+- 只處理 `OWNER_USER_ID` **在與 Bot 的私訊中**傳送的訊息與按下的按鈕。
+- 其他一律直接丟棄，不做任何回應。其他使用者、群組（即使是你本人在群組中輸入）、頻道與 inline 查詢
+  都不會收到回覆、錯誤訊息或按鈕回應，Bot 不會洩漏任何資訊。
+- 你自己的操作也有頻率限制（最多連續 20 次，每分鐘補充 30 次），且同一時間只能執行一個手動推送。
+
+### 選單
+
+```
+🛠 管理面板
+├─ 📊 狀態              已翻譯／待翻譯數量（依團體與成員）、額度、佇列
+├─ 👥 成員              選擇團體 → 成員清單 → 成員
+│   ├─ 🌐 自動翻譯 開／關
+│   ├─ 📦 存檔／備份 開／關
+│   ├─ 📡 設定推送目標          （回覆頻道 ID；「-」清除；/cancel 取消）
+│   └─ 🧹 清除推送目標          （改回使用 config.json 的設定）
+├─ 📰 最新文章          由新到舊，每頁 8 篇 → 文章 → 選擇聊天室 → 翻譯並發送
+├─ 🧮 額度              調整每日上限（±1／±10）、重設今日用量
+├─ ⏸ 暫停／▶️ 繼續 翻譯
+└─ ⏸ 暫停／▶️ 繼續 推送
+```
+
+### 各開關的作用
+
+| 開關 | 關閉／暫停時 |
+| --- | --- |
+| **翻譯**（全域） | 停止補翻譯；即時推送改發日文原文。 |
+| **推送**（全域） | 新文章進入推送佇列等待。恢復後會立即由舊到新發送。 |
+| **自動翻譯**（成員） | 該成員的文章以日文原文推送，並且不列入補翻譯。 |
+| **存檔／備份**（成員） | 新文章不會存到 `blogContent/`，也不列入補翻譯；但仍會記錄在 `BlogStatus.JSON` 並照常推送。 |
+| **推送目標**（成員） | 設定後會取代該成員在 `config.json` 中的推送設定；團體與分類的推送仍然有效。即使團體在 `config.json` 中為停用狀態也會生效。 |
+
+推送目標可以是數字 ID（`-1001234567890`）或公開帳號（`@my_channel`）。發送時使用 `config.json` 中該成員的 Bot，
+若沒有則使用團體的 Bot，再沒有則使用管理面板的 Bot。該 Bot 必須是目標聊天室的管理員。
+
+### 手動推送
+
+從**最新文章**開啟一篇文章，再點選一個聊天室，就會翻譯並發送過去。⭐ 表示該文章依推送規則會送達的聊天室，
+**My DM (preview)** 則會發送給你自己。手動推送不受兩個暫停開關與成員自動翻譯設定影響，不佔用額度，
+也不會寫入 `BroadcastStatus.JSON`，因此同一篇文章可以重複發送。沒有存檔 HTML 的文章（標示為 ∅）無法發送。
+
+## 補翻譯與每日額度
+
+補翻譯會把 `blogContent/` 中已存檔的 HTML 翻譯到 `blogContent_TC/`：
+
+- **由新到舊。** 依發布時間倒序處理。沒有日期的文章（有 HTML 但 `BlogStatus.JSON` 中沒有紀錄）排在最後。
+- **每日額度。** 每個 UTC 日最多嘗試 `dailyLimit` 次；每次嘗試都會計入，失敗也一樣。
+  計數會在 UTC 00:00 重設：由計時器觸發，且每次讀取額度時也會檢查，因此重新啟動或電腦休眠都不會把用量帶到隔天。
+- **略過：** 關閉自動翻譯或存檔的成員的文章，以及失敗 3 次的文章。
+- **停止條件：** 額度用完、翻譯已暫停，或到了 JST 08:00 的輪詢時段。
+
+狀態畫面中的「已翻譯」指的是 `blogContent_TC/` 中已有翻譯檔；「待翻譯」指的是有存檔 HTML 但尚未翻譯。
+即時推送會為 Telegram 翻譯文章，但不會寫入 `blogContent_TC/`。
+
 ## 設定
 
 頻道與翻譯設定都寫在 `config/config.json`，完整範本請見 `config/config.example.json`。
@@ -108,6 +191,7 @@ record/                      各團體的 BlogStatus.JSON 與 BroadcastStatus.JS
 如果修改後 JSON 格式有誤，程式會記錄錯誤並繼續使用上一份有效的設定。
 
 `config/config.json` 內含 Bot Token，已加入 .gitignore；`config/config.example.json` 則納入版本控制。
+在管理面板中變更的設定另外存放在 `record/admin-state.json`（請見[管理面板狀態](#管理面板狀態)），並疊加在 `config.json` 之上。
 
 ### 結構
 
@@ -167,12 +251,13 @@ record/                      各團體的 BlogStatus.JSON 與 BroadcastStatus.JS
 | 欄位 | 預設值 | 說明 |
 | --- | --- | --- |
 | `enabled` | `true` | 是否翻譯；設為 `false` 時推送日文原文 |
-| `provider` | `"gemini"` | `gemini` \| `claude` \| `openai` |
 | `thinking_level` | `"middle"` | Gemini 推理預算：`low` \| `middle` \| `high` |
 | `target_language` | `"Traditional Chinese (Taiwan)"` | 提示詞中指定的目標語言 |
 | `translate_title` | `true` | 翻譯文章標題 |
 | `translate_body` | `true` | 翻譯內文 |
 | `translate_image_captions` | `true` | 翻譯圖片之間的簡短文字 |
+
+團體的 `target_language`、`thinking_level` 與詞彙表也會套用到補翻譯。
 
 ### `message` 訊息設定
 
@@ -189,22 +274,46 @@ record/                      各團體的 BlogStatus.JSON 與 BroadcastStatus.JS
 
 ### 推送規則
 
-每篇文章依序比對成員清單、分類清單，最後是團體共用頻道。所有符合的目標會合併，並以 Bot Token + 頻道 ID 去除重複，
-因此同一個頻道不會收到同一篇文章兩次。設為 `"enabled": false` 的成員在所有頻道都不會推送。
-每個頻道使用其來源規則的翻譯與訊息設定；同一個頻道出現在多個規則時，優先順序為成員 > 分類 > 團體預設。
+每篇文章依序比對管理面板設定的推送目標、成員清單、分類清單，最後是團體共用頻道。所有符合的目標會合併，
+並以 Bot Token + 頻道 ID 去除重複，因此同一個頻道不會收到同一篇文章兩次。在 `config.json` 中設為
+`"enabled": false` 的成員，在 `config.json` 設定的所有頻道都不會推送；管理面板設定的目標仍然有效。
+每個頻道使用其來源規則的翻譯與訊息設定；同一個頻道出現在多個規則時，優先順序為管理面板／成員 > 分類 > 團體預設。
+
+### 推送紀錄與重試
 
 推送紀錄依團體儲存在 `record/<團體>/BroadcastStatus.JSON`，以文章 ID + 頻道 ID 為鍵。
 重新啟動後不會重複發送，新加入的頻道只會收到之後的新文章。
+
+只要有任一目標發送失敗，或推送處於暫停狀態，文章就會進入 `record/broadcast-queue.json`。
+佇列會在每一輪開始時以及恢復推送時重試，且只發送給尚未收到的聊天室。重試 5 次仍失敗的文章會被移除並記錄在記錄檔中。
+
+### 管理面板狀態
+
+`record/admin-state.json` 由管理面板寫入。程式停止時也可以手動編輯。
+
+```jsonc
+{
+  "version": 1,
+  "flags": { "translationPaused": false, "broadcastPaused": false },
+  "quota": { "dailyLimit": 50, "date": "2026-10-25", "used": 12 },   // date 為 UTC 日期
+  "members": {
+    // 只記錄與預設值（全部開啟、無推送目標）不同的成員
+    "Hinatazaka46/金村美玖": { "autoTranslate": false, "archive": true, "chatIds": ["-1001234567890"] }
+  },
+  "backfillFailures": { "Hinatazaka46/104023": 1 }   // 失敗 3 次後略過
+}
+```
 
 ## 環境變數
 
 | 變數 | 用途 |
 | --- | --- |
 | `POLLING_INTERVAL_MS` | 執行間隔，單位是**秒**（雖然名稱是 MS），預設 `900` |
-| `ENABLE_TRANSLATION` | 設為 `true` 時啟用夜間 `blogContent_TC` HTML 翻譯作業 |
+| `ENABLE_TRANSLATION` | 設為 `true` 時啟用夜間補翻譯，輸出到 `blogContent_TC/` |
 | `ENABLE_BROADCAST` | 設為 `false` 時關閉所有 Telegram 推送（預設開啟） |
 | `CONFIG_FILE_NAME` | 推送設定檔路徑（預設 `config/config.json`） |
+| `ADMIN_BOT_TOKEN` | 提供管理面板的 Bot Token |
+| `OWNER_USER_ID` | 你的 Telegram 數字使用者 ID；管理面板只回應這個帳號 |
+| `DAILY_TRANSLATION_QUOTA` | 每日補翻譯上限的初始值（預設 `50`）。`record/admin-state.json` 建立後改用其中儲存的上限，請在管理面板中調整 |
 | `BOKUAO_COOKIE` | 僕が見たかった青空部落格的登入 Cookie |
-| `GEMINI_API_KEY`、`GEMINI_API_MODEL_1..3` | Gemini 翻譯；依序嘗試各模型 |
-| `CLAUDE_API_KEY`、`CLAUDE_API_MODEL` | Claude 翻譯 |
-| `OPENAI_API_KEY`、`OPENAI_API_MODEL` | OpenAI 翻譯 |
+| `GEMINI_API_KEY`、`GEMINI_API_MODEL_1..3` | Gemini 翻譯；依序嘗試各模型，發生錯誤時改用下一個 |

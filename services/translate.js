@@ -1,15 +1,9 @@
 import { GoogleGenAI } from '@google/genai';
-import Anthropic from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
 import {
     GEMINI_API_KEY,
     GEMINI_API_MODEL_1,
     GEMINI_API_MODEL_2,
-    GEMINI_API_MODEL_3,
-    CLAUDE_API_KEY,
-    CLAUDE_API_MODEL,
-    OPENAI_API_KEY,
-    OPENAI_API_MODEL
+    GEMINI_API_MODEL_3
 } from '../config/constants.js';
 import { sleep } from '../utils/misc.js';
 
@@ -179,70 +173,17 @@ async function translateWithGemini(text, member, group, options = {}) {
     return null;
 }
 
-async function translateWithClaude(text, member, group, options = {}) {
-    if (!CLAUDE_API_KEY) {
-        console.error('❌ Claude API key missing.');
-        return null;
-    }
-    const { systemInstruction, userContent } = getTranslationContext(text, member, group, options);
-    const anthropic = new Anthropic({ apiKey: CLAUDE_API_KEY });
-
-    try {
-        const response = await anthropic.messages.create({
-            model: CLAUDE_API_MODEL || 'claude-sonnet-5',
-            max_tokens: 8192,
-            system: systemInstruction,
-            messages: [{ role: 'user', content: userContent }]
-        });
-        return response.content[0]?.text?.trim() || null;
-    } catch (error) {
-        console.error(`❌ Claude translate error: ${error.message}`);
-        return null;
-    }
-}
-
-async function translateWithOpenAI(text, member, group, options = {}) {
-    if (!OPENAI_API_KEY) {
-        console.error('❌ OpenAI API key missing.');
-        return null;
-    }
-    const { systemInstruction, userContent } = getTranslationContext(text, member, group, options);
-    const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-
-    try {
-        const response = await openai.chat.completions.create({
-            model: OPENAI_API_MODEL || 'gpt-4o',
-            messages: [
-                { role: 'system', content: systemInstruction },
-                { role: 'user', content: userContent }
-            ],
-            temperature: 0.7
-        });
-        return response.choices[0]?.message?.content?.trim() || null;
-    } catch (error) {
-        console.error(`❌ OpenAI translate error: ${error.message}`);
-        return null;
-    }
-}
-
 /**
- * Translates a single chunk of text.
+ * Translates a single chunk of text with Gemini.
  *
  * @param {string} text
  * @param {string} member - Author name, used for context.
  * @param {string} group - Idol group name, used for context.
- * @param {string} [provider] - 'gemini' | 'claude' | 'openai'.
  * @param {object} [options] - { preserveHtml, segmented, glossary, targetLanguage, thinkingLevel }
  */
-export async function translateMessage(text, member, group, provider = 'gemini', options = {}) {
+export async function translateMessage(text, member, group, options = {}) {
     if (!text) return null;
-    const selectedProvider = (provider || 'gemini').toLowerCase();
-
-    switch (selectedProvider) {
-        case 'claude': return await translateWithClaude(text, member, group, options);
-        case 'openai': return await translateWithOpenAI(text, member, group, options);
-        case 'gemini': default: return await translateWithGemini(text, member, group, options);
-    }
+    return await translateWithGemini(text, member, group, options);
 }
 
 /** Splits segment indices into batches that stay under MAX_BATCH_CHARS. */
@@ -301,15 +242,13 @@ export async function translateSegments(segments, member, group, options = {}) {
     const results = new Array(segments.length).fill(null);
     if (!segments.length) return results;
 
-    const { provider = 'gemini', ...translateOptions } = options;
-
     for (const indices of batchSegments(segments)) {
         const payload = indices
             .map((originalIndex, position) => `${SEGMENT_MARKER(position + 1)}\n${segments[originalIndex]}`)
             .join('\n\n');
 
-        const response = await translateMessage(payload, member, group, provider, {
-            ...translateOptions,
+        const response = await translateMessage(payload, member, group, {
+            ...options,
             segmented: true
         });
 
@@ -321,9 +260,7 @@ export async function translateSegments(segments, member, group, options = {}) {
         if (missing.length) {
             console.warn(`⚠️ Segmented translation returned ${parsed.size}/${indices.length} segments. Retrying ${missing.length} individually...`);
             for (const originalIndex of missing) {
-                results[originalIndex] = await translateMessage(
-                    segments[originalIndex], member, group, provider, translateOptions
-                );
+                results[originalIndex] = await translateMessage(segments[originalIndex], member, group, options);
             }
         }
     }
@@ -343,7 +280,7 @@ export async function translateSegments(segments, member, group, options = {}) {
  * @param {Array<object>} post.blocks - Classified blocks (text/image/video).
  * @param {string} post.member
  * @param {string} post.group
- * @param {object} [options] - { provider, glossary, targetLanguage, thinkingLevel,
+ * @param {object} [options] - { glossary, targetLanguage, thinkingLevel,
  *                               translateTitle, translateBody, translateImageCaptions }
  * @returns {Promise<{title: string|null, blocks: Array<object>, translatedCount: number}>}
  */

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { CONFIG_FILE_NAME } from './constants.js';
+import { CONFIG_FILE_NAME, ADMIN_BOT_TOKEN } from './constants.js';
+import { getMemberSettings, listMemberTargetOverrides } from '../services/admin-state.js';
 
 /**
  * Broadcast configuration loader.
@@ -15,7 +16,6 @@ const BUILT_IN_DEFAULTS = {
     enabled: true,
     translation: {
         enabled: true,
-        provider: 'gemini',
         thinking_level: 'middle',
         target_language: 'Traditional Chinese (Taiwan)',
         translate_title: true,
@@ -153,6 +153,7 @@ export function getGroupConfig(groupName) {
 export function isGroupBroadcastEnabled(groupName) {
     const config = loadChannelConfig();
     if (!config.enabled) return false;
+    if (listMemberTargetOverrides(groupName).length) return true;
     const group = config.groups.get(groupName);
     if (!group || !group.enabled) return false;
     return (
@@ -160,6 +161,49 @@ export function isGroupBroadcastEnabled(groupName) {
         group.members.some(m => m.enabled && m.chatIds.length > 0) ||
         group.categories.some(c => c.enabled && c.chatIds.length > 0)
     );
+}
+
+/**
+ * Route for targets the owner set from the admin panel. Settings come from the
+ * member's config entry when there is one, else the group's, else the defaults;
+ * the bot falls back to the admin bot so a member with no config entry still works.
+ */
+function adminRoute(config, groupName, memberName, chatIds) {
+    const group = config.groups.get(groupName);
+    const member = group?.members.find(m => m.name === memberName);
+    return {
+        label: `${groupName}/${memberName} (admin)`,
+        botToken: member?.botToken || group?.botToken || ADMIN_BOT_TOKEN,
+        chatIds,
+        translation: member?.translation || group?.translation || config.defaults.translation,
+        message: member?.message || group?.message || config.defaults.message
+    };
+}
+
+/** Expands routes into de-duplicated destinations (first route wins per chat). */
+function routesToDestinations(routes, glossary) {
+    const seen = new Set();
+    const destinations = [];
+    for (const route of routes) {
+        if (!route.botToken) {
+            console.warn(`[config] Route "${route.label}" has chat ids but no bot token. Skipping.`);
+            continue;
+        }
+        for (const chatId of route.chatIds) {
+            const key = `${route.botToken}:${chatId}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            destinations.push({
+                chatId,
+                botToken: route.botToken,
+                label: route.label,
+                translation: route.translation,
+                message: route.message,
+                glossary
+            });
+        }
+    }
+    return destinations;
 }
 
 function safeRegexTest(pattern, value) {
@@ -202,16 +246,24 @@ export function resolveDestinations(groupName, blog) {
     const config = loadChannelConfig();
     if (!config.enabled) return [];
 
-    const group = config.groups.get(groupName);
-    if (!group || !group.enabled) return [];
-
     const memberName = (blog.Name || '').replace(/\s+/g, '');
+    const group = config.groups.get(groupName);
     const routes = [];
+
+    // Targets set from the admin panel replace the member's config.json route and
+    // apply even when the group is disabled there: setting them is the opt-in.
+    const adminChatIds = getMemberSettings(groupName, memberName).chatIds;
+    if (adminChatIds?.length) {
+        routes.push(adminRoute(config, groupName, memberName, adminChatIds.map(String)));
+    }
+
+    if (!group || !group.enabled) return routesToDestinations(routes, group?.glossary || {});
 
     const member = group.members.find(m => m.name && m.name === memberName);
     if (member) {
-        if (!member.enabled) return [];   // An explicitly disabled member is muted everywhere.
-        if (member.chatIds.length) {
+        // An explicitly disabled member is muted everywhere config.json routes it.
+        if (!member.enabled) return routesToDestinations(routes, group.glossary);
+        if (member.chatIds.length && !adminChatIds?.length) {
             routes.push({
                 label: `${groupName}/${member.name}`,
                 botToken: member.botToken || group.botToken,
@@ -244,27 +296,63 @@ export function resolveDestinations(groupName, blog) {
         });
     }
 
-    const seen = new Set();
-    const destinations = [];
-    for (const route of routes) {
-        if (!route.botToken) {
-            console.warn(`[config] Route "${route.label}" has chat ids but no bot token. Skipping.`);
-            continue;
-        }
-        for (const chatId of route.chatIds) {
-            const key = `${route.botToken}:${chatId}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            destinations.push({
-                chatId,
-                botToken: route.botToken,
-                label: route.label,
-                translation: route.translation,
-                message: route.message,
-                glossary: group.glossary
+    return routesToDestinations(routes, group.glossary);
+}
+
+/**
+ * Every destination the bot knows about, across all groups — what the admin
+ * panel offers for a manual send. Disabled flags are ignored on purpose: the
+ * owner is picking a chat explicitly. The glossary is the post's group's.
+ */
+export function listKnownTargets(forGroupName) {
+    const config = loadChannelConfig();
+    const routes = [];
+
+    for (const [groupName, group] of config.groups) {
+        for (const member of group.members) {
+            if (member.chatIds.length) routes.push({
+                label: `${groupName}/${member.name}`,
+                botToken: member.botToken || group.botToken,
+                chatIds: member.chatIds,
+                translation: member.translation,
+                message: member.message
             });
+        }
+        for (const category of group.categories) {
+            if (category.chatIds.length) routes.push({
+                label: `${groupName}/${category.name}`,
+                botToken: category.botToken || group.botToken,
+                chatIds: category.chatIds,
+                translation: category.translation,
+                message: category.message
+            });
+        }
+        if (group.chatIds.length) routes.push({
+            label: groupName,
+            botToken: group.botToken,
+            chatIds: group.chatIds,
+            translation: group.translation,
+            message: group.message
+        });
+    }
+
+    const groupNames = new Set([...config.groups.keys(), forGroupName]);
+    for (const groupName of groupNames) {
+        for (const { memberName, chatIds } of listMemberTargetOverrides(groupName)) {
+            routes.push(adminRoute(config, groupName, memberName, chatIds));
         }
     }
 
-    return destinations;
+    return routesToDestinations(routes, config.groups.get(forGroupName)?.glossary || {});
+}
+
+/** Translation/message settings to use for a chat that has no route of its own. */
+export function getFallbackSettings(groupName) {
+    const config = loadChannelConfig();
+    const group = config.groups.get(groupName);
+    return {
+        translation: group?.translation || config.defaults.translation,
+        message: group?.message || config.defaults.message,
+        glossary: group?.glossary || {}
+    };
 }

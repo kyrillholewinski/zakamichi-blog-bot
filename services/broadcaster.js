@@ -11,20 +11,36 @@ import { parseBlogHtml, classifyBlocks } from './blog-content.js';
 import { translateBlogPost } from './translate.js';
 import { buildBlogMessage } from './message-builder.js';
 import { getBot } from './telegram.js';
+import { isBroadcastPaused, isTranslationPaused, getMemberSettings } from './admin-state.js';
+import { enqueueBroadcast, listQueue, removeFromQueue, recordQueueAttempt } from './broadcast-queue.js';
 import { sleep } from '../utils/misc.js';
 
 /**
  * Broadcasts crawled blog posts to the Telegram channels configured in
- * config/config.json.
+ * config/config.json and the admin panel.
  *
  * Delivery is recorded per group in record/<group>/BroadcastStatus.JSON keyed by
  * blog id + destination, so a restart mid-cycle re-sends nothing already
- * delivered, and adding a channel later only sends future posts to it.
+ * delivered, and adding a channel later only sends future posts to it. Posts
+ * that could not be delivered wait in the broadcast queue.
  */
 
 const MAX_SEND_RETRIES = 3;
 const MEDIA_THROTTLE_MS = 2000;
 const TEXT_THROTTLE_MS = 500;
+// After this many cycles with a failed destination, a queued post is dropped.
+const MAX_QUEUE_ATTEMPTS = 5;
+
+// BroadcastStatus.JSON is read-modify-written per post, and crawlers for several
+// groups, the queue drain and the admin panel can all send at once. Running
+// sends one at a time keeps those writes from overwriting each other, and suits
+// Telegram's rate limits anyway.
+let sendChain = Promise.resolve();
+function serialized(task) {
+    const run = sendChain.then(task, task);
+    sendChain = run.catch(() => { });
+    return run;
+}
 
 export function resolveSourceUrl(groupName, blog) {
     if (blog.Url) return blog.Url;
@@ -59,7 +75,7 @@ async function saveBroadcastStatus(groupName, status) {
     }
 }
 
-async function readBlogHtml(groupName, blogId) {
+export async function readBlogHtml(groupName, blogId) {
     const filePath = path.join(PATHS.BLOG_CONTENT, groupName, `${blogId}.html`);
     try {
         return await fs.promises.readFile(filePath, 'utf-8');
@@ -131,8 +147,6 @@ async function deliver(bot, chatId, plan, label) {
  */
 function translationSignature(settings, glossary) {
     return JSON.stringify([
-        settings.enabled !== false,
-        settings.provider || 'gemini',
         settings.target_language || '',
         settings.thinking_level || '',
         settings.translate_title !== false,
@@ -142,29 +156,23 @@ function translationSignature(settings, glossary) {
     ]);
 }
 
-/**
- * Broadcasts a single blog post to every destination configured for it.
- *
- * @param {string} groupName
- * @param {object} blog - Crawler detail record ({ ID, Title, Name, DateTime, Url, ... }).
- * @param {string} [html] - Article HTML; read from blogContent/ when omitted.
- * @returns {Promise<{sent: number, skipped: number, failed: number}>}
- */
-export async function broadcastBlog(groupName, blog, html = null) {
+async function broadcastBlogNow(groupName, blog, html, options) {
     const summary = { sent: 0, skipped: 0, failed: 0 };
-    if (!ENABLE_BROADCAST) return summary;
+    const { destinations: explicitDestinations, force = false, forceTranslate = false } = options;
 
-    const destinations = resolveDestinations(groupName, blog);
+    const destinations = explicitDestinations ?? resolveDestinations(groupName, blog);
     if (!destinations.length) return summary;
 
-    const status = await loadBroadcastStatus(groupName);
+    // Forced (manual) sends neither consult nor update the delivery record.
+    const status = force ? {} : await loadBroadcastStatus(groupName);
     const pending = destinations.filter(d => !status[`${blog.ID}@${d.chatId}`]);
     summary.skipped = destinations.length - pending.length;
     if (!pending.length) return summary;
 
-    const articleHtml = html ?? await readBlogHtml(groupName, blog.ID);
+    const articleHtml = html ?? blog.content ?? await readBlogHtml(groupName, blog.ID);
     if (!articleHtml) {
-        console.warn(`⚠️ No stored HTML for ${groupName}/${blog.ID}. Skipping broadcast.`);
+        console.warn(`⚠️ No HTML available for ${groupName}/${blog.ID}. Skipping broadcast.`);
+        summary.failed = pending.length;
         return summary;
     }
 
@@ -175,6 +183,7 @@ export async function broadcastBlog(groupName, blog, html = null) {
     }
 
     const sourceUrl = resolveSourceUrl(groupName, blog);
+    const autoTranslate = !isTranslationPaused() && getMemberSettings(groupName, blog.Name).autoTranslate;
     const translationCache = new Map();
     let statusDirty = false;
 
@@ -183,14 +192,14 @@ export async function broadcastBlog(groupName, blog, html = null) {
 
         // --- Translate (once per distinct translation configuration) ---
         let translated = { title: null, blocks };
-        if (translation.enabled !== false) {
+        const shouldTranslate = forceTranslate || (autoTranslate && translation.enabled !== false);
+        if (shouldTranslate) {
             const signature = translationSignature(translation, glossary);
             if (!translationCache.has(signature)) {
                 console.log(`🌐 Translating ${groupName}/${blog.ID} by ${blog.Name} for "${label}"...`);
                 translationCache.set(signature, await translateBlogPost(
                     { title: blog.Title, blocks, member: blog.Name, group: groupName },
                     {
-                        provider: translation.provider,
                         glossary,
                         targetLanguage: translation.target_language,
                         thinkingLevel: translation.thinking_level,
@@ -218,13 +227,15 @@ export async function broadcastBlog(groupName, blog, html = null) {
         const ok = await deliver(bot, chatId, plan, `${label} (${chatId})`);
 
         if (ok) {
-            status[`${blog.ID}@${chatId}`] = new Date().toISOString();
-            statusDirty = true;
+            if (!force) {
+                status[`${blog.ID}@${chatId}`] = new Date().toISOString();
+                statusDirty = true;
+            }
             summary.sent += 1;
             console.log(`✅ Broadcast ${groupName}/${blog.ID} → ${label} (${chatId}).`);
         } else {
             summary.failed += 1;
-            console.error(`❌ Broadcast failed for ${groupName}/${blog.ID} → ${label} (${chatId}). It will be retried next cycle.`);
+            console.error(`❌ Broadcast failed for ${groupName}/${blog.ID} → ${label} (${chatId}).`);
         }
     }
 
@@ -232,24 +243,96 @@ export async function broadcastBlog(groupName, blog, html = null) {
     return summary;
 }
 
-/** Sequential so a burst of new posts cannot trip Telegram's per-chat rate limit. */
+/**
+ * Broadcasts a single blog post.
+ *
+ * @param {string} groupName
+ * @param {object} blog - Crawler detail record ({ ID, Title, Name, DateTime, Url, content? }).
+ * @param {string} [html] - Article HTML; falls back to blog.content, then blogContent/.
+ * @param {object} [options]
+ * @param {Array<object>} [options.destinations] - Send here instead of the configured routes.
+ * @param {boolean} [options.force] - Ignore and don't update the delivery record (manual sends).
+ * @param {boolean} [options.forceTranslate] - Translate even if paused or switched off for the member.
+ * @returns {Promise<{sent: number, skipped: number, failed: number}>}
+ */
+export function broadcastBlog(groupName, blog, html = null, options = {}) {
+    if (!ENABLE_BROADCAST && !options.destinations) {
+        return Promise.resolve({ sent: 0, skipped: 0, failed: 0 });
+    }
+    return serialized(() => broadcastBlogNow(groupName, blog, html, options));
+}
+
+/**
+ * Broadcasts a crawl's new posts, oldest first so a channel reads in the order
+ * they were written. While broadcasting is paused, or when a destination fails,
+ * the post goes to the queue instead of being lost.
+ */
 export async function broadcastBlogs(groupName, blogs) {
-    const total = { sent: 0, skipped: 0, failed: 0 };
+    const total = { sent: 0, skipped: 0, failed: 0, queued: 0 };
     if (!ENABLE_BROADCAST || !blogs?.length) return total;
     if (!isGroupBroadcastEnabled(groupName)) return total;
 
-    // Oldest first, so a channel reads in the order the posts were written.
     const ordered = [...blogs].sort((a, b) => new Date(a.DateTime) - new Date(b.DateTime));
 
     for (const blog of ordered) {
+        if (isBroadcastPaused()) {
+            if (resolveDestinations(groupName, blog).length) {
+                enqueueBroadcast(groupName, blog);
+                total.queued += 1;
+            }
+            continue;
+        }
+
         const result = await broadcastBlog(groupName, blog);
         total.sent += result.sent;
         total.skipped += result.skipped;
         total.failed += result.failed;
+        if (result.failed) {
+            enqueueBroadcast(groupName, blog);
+            total.queued += 1;
+        }
     }
 
-    if (total.sent || total.failed) {
-        console.log(`📡 ${groupName}: broadcast ${total.sent} sent, ${total.failed} failed, ${total.skipped} already delivered.`);
+    if (total.sent || total.failed || total.queued) {
+        console.log(`📡 ${groupName}: broadcast ${total.sent} sent, ${total.failed} failed, ${total.queued} queued, ${total.skipped} already delivered.`);
     }
     return total;
+}
+
+let draining = false;
+
+/**
+ * Retries queued posts. Already-delivered destinations are skipped through
+ * BroadcastStatus.JSON, so only the chats that missed a post receive it.
+ */
+export async function drainBroadcastQueue() {
+    if (!ENABLE_BROADCAST || draining) return { sent: 0, remaining: listQueue().length };
+    draining = true;
+    let sent = 0;
+
+    try {
+        for (const entry of listQueue()) {
+            if (isBroadcastPaused()) break;
+
+            const result = await broadcastBlog(entry.group, entry.blog, entry.html);
+            sent += result.sent;
+
+            if (!result.failed) {
+                removeFromQueue(entry.group, entry.blog.ID);
+                continue;
+            }
+
+            const attempts = recordQueueAttempt(entry.group, entry.blog.ID);
+            if (attempts >= MAX_QUEUE_ATTEMPTS) {
+                console.error(`❌ Giving up on ${entry.group}/${entry.blog.ID} after ${attempts} queued attempts.`);
+                removeFromQueue(entry.group, entry.blog.ID);
+            }
+        }
+    } finally {
+        draining = false;
+    }
+
+    const remaining = listQueue().length;
+    if (sent || remaining) console.log(`📬 Broadcast queue: ${sent} delivered, ${remaining} still waiting.`);
+    return { sent, remaining };
 }

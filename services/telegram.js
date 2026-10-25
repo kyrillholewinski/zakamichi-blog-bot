@@ -30,6 +30,38 @@ export class TelegramApiClient {
         });
     }
 
+    /**
+     * Long-polls for updates. The HTTP timeout outlasts Telegram's `timeout` so
+     * an idle poll ends with an empty result rather than a client-side abort.
+     */
+    async getUpdates(params = {}) {
+        return await httpRequest({
+            method: 'POST',
+            url: `${this.baseUrl}/getUpdates`,
+            data: params,
+            headers: { 'Content-Type': 'application/json' },
+            timeout: ((params.timeout || 0) + 15) * 1000
+        });
+    }
+
+    async answerCallbackQuery(callbackQueryId, options = {}) {
+        return await httpRequest({
+            method: 'POST',
+            url: `${this.baseUrl}/answerCallbackQuery`,
+            data: { callback_query_id: callbackQueryId, ...options },
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+
+    async editMessageText(chatId, messageId, text, options = {}) {
+        return await httpRequest({
+            method: 'POST',
+            url: `${this.baseUrl}/editMessageText`,
+            data: { chat_id: chatId, message_id: messageId, text, ...options },
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+
     async sendPhoto(chatId, media, options = {}) {
         return this._sendMedia('sendPhoto', 'photo', chatId, media, options);
     }
