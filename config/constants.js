@@ -9,6 +9,12 @@ export const BOKUAO_COOKIE = process.env.BOKUAO_COOKIE || '';
 
 export const ENABLE_TRANSLATION = process.env.ENABLE_TRANSLATION === 'true';
 
+// Translate each newly crawled post into blogContent_TC/ as soon as it is archived.
+// Only posts younger than the age limit qualify, so a first crawl of an empty
+// archive leaves the old backlog to the quota-limited backfill.
+export const TRANSLATE_ON_ARCHIVE = process.env.TRANSLATE_ON_ARCHIVE !== 'false';
+export const ARCHIVE_TRANSLATE_MAX_AGE_HOURS = parseInt(process.env.ARCHIVE_TRANSLATE_MAX_AGE_HOURS, 10) || 72;
+
 // Master kill switch for Telegram broadcasting. Per-group/member/category toggles
 // live in CONFIG_FILE_NAME so channels can be changed without touching code.
 export const ENABLE_BROADCAST = process.env.ENABLE_BROADCAST !== 'false';

@@ -14,8 +14,9 @@ import { PATHS, DAILY_TRANSLATION_QUOTA } from '../config/constants.js';
  *   "flags": { "translationPaused": false, "broadcastPaused": false },
  *   "quota": { "dailyLimit": 50, "date": "2026-10-25", "used": 12 },
  *   "members": {
- *     "Hinatazaka46/金村美玖": { "autoTranslate": true, "archive": true, "chatIds": ["-100123"] }
+ *     "Hinatazaka46/金村美玖": { "autoTranslate": true, "archive": true, "translationBlocked": false, "chatIds": ["-100123"] }
  *   },
+ *   "blockedGroups": ["Bokuao"],
  *   "backfillFailures": { "Hinatazaka46/104023": 1 }
  * }
  *
@@ -25,7 +26,7 @@ import { PATHS, DAILY_TRANSLATION_QUOTA } from '../config/constants.js';
 
 const STATE_PATH = PATHS.ADMIN_STATE;
 
-const MEMBER_DEFAULTS = Object.freeze({ autoTranslate: true, archive: true, chatIds: null });
+const MEMBER_DEFAULTS = Object.freeze({ autoTranslate: true, archive: true, translationBlocked: false, chatIds: null });
 
 export function utcDateString(date = new Date()) {
     return date.toISOString().slice(0, 10);
@@ -37,6 +38,7 @@ function defaultState() {
         flags: { translationPaused: false, broadcastPaused: false },
         quota: { dailyLimit: DAILY_TRANSLATION_QUOTA, date: utcDateString(), used: 0 },
         members: {},
+        blockedGroups: [],
         backfillFailures: {}
     };
 }
@@ -50,6 +52,7 @@ function loadState() {
             flags: { ...base.flags, ...raw.flags },
             quota: { ...base.quota, ...raw.quota },
             members: raw.members && typeof raw.members === 'object' ? raw.members : {},
+            blockedGroups: Array.isArray(raw.blockedGroups) ? raw.blockedGroups.map(String) : [],
             backfillFailures: raw.backfillFailures && typeof raw.backfillFailures === 'object' ? raw.backfillFailures : {}
         };
     } catch (err) {
@@ -152,6 +155,7 @@ export function updateMemberSettings(groupName, memberName, patch) {
     if (next.chatIds === null || next.chatIds === undefined) delete next.chatIds;
     if (next.autoTranslate === MEMBER_DEFAULTS.autoTranslate) delete next.autoTranslate;
     if (next.archive === MEMBER_DEFAULTS.archive) delete next.archive;
+    if (next.translationBlocked === MEMBER_DEFAULTS.translationBlocked) delete next.translationBlocked;
 
     if (Object.keys(next).length) state.members[key] = next;
     else delete state.members[key];
@@ -166,6 +170,31 @@ export function listMemberTargetOverrides(groupName) {
     return Object.entries(state.members)
         .filter(([key, value]) => key.startsWith(prefix) && Array.isArray(value.chatIds) && value.chatIds.length)
         .map(([key, value]) => ({ memberName: key.slice(prefix.length), chatIds: value.chatIds.map(String) }));
+}
+
+// --- Translation block (group-wide or per member) ---
+
+export const isGroupTranslationBlocked = (groupName) => state.blockedGroups.includes(groupName);
+
+export function setGroupTranslationBlocked(groupName, blocked) {
+    const others = state.blockedGroups.filter(g => g !== groupName);
+    state.blockedGroups = blocked ? [...others, groupName] : others;
+    persist();
+}
+
+/**
+ * A blocked group or member is never translated: not on archiving, not by the
+ * backfill, not when broadcasting, and not by a manual send from the panel.
+ */
+export function isTranslationBlocked(groupName, memberName) {
+    return isGroupTranslationBlocked(groupName) || getMemberSettings(groupName, memberName).translationBlocked;
+}
+
+/** Whether automatic translation (archive, backfill, live broadcast) may run for this author. */
+export function canAutoTranslate(groupName, memberName) {
+    return !isTranslationPaused()
+        && !isTranslationBlocked(groupName, memberName)
+        && getMemberSettings(groupName, memberName).autoTranslate;
 }
 
 // --- Backfill failure tracking ---

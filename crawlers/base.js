@@ -2,6 +2,8 @@ import pLimit from 'p-limit';
 import os from 'os';
 import { loadBlogStatus, saveBlogStatus, saveBlogContent } from '../utils/file-system.js';
 import { broadcastBlogs } from '../services/broadcaster.js';
+import { translateNewArchives } from '../services/archive-translation.js';
+import { invalidateBlogIndex } from '../services/backfill.js';
 import { getMemberSettings } from '../services/admin-state.js';
 
 export class BaseCrawler {
@@ -61,6 +63,10 @@ export class BaseCrawler {
         if (this.newBlogsCount > 0) {
             console.log(`💾 Saving ${this.newBlogsCount} new blogs for ${this.groupName}...`);
             await saveBlogStatus(this.groupName, this.existingBlogs, this.memberMap);
+            // Translate into the archive first, so the broadcast below reuses it
+            // instead of making its own AI request.
+            await translateNewArchives(this.groupName, this.newBlogs);
+            invalidateBlogIndex();
             // Broadcast after the manifest is on disk: a crash mid-send then resumes
             // from BroadcastStatus.JSON instead of re-crawling everything.
             await broadcastBlogs(this.groupName, this.newBlogs);

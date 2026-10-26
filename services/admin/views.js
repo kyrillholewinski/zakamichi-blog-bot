@@ -9,7 +9,9 @@ import {
     isTranslationPaused,
     isBroadcastPaused,
     getQuota,
-    getMemberSettings
+    getMemberSettings,
+    isGroupTranslationBlocked,
+    isTranslationBlocked
 } from '../admin-state.js';
 
 /**
@@ -26,15 +28,20 @@ import {
  *   mg                       pick a group's members
  *   ml:<g>:<page>            member list
  *   m:<g>:<hash>             member detail
- *   mt|ma|mc|mx:<g>:<hash>   toggle translate, toggle archive, set targets, clear targets
- *   bl:<page>                recent blogs
- *   b:<g>:<id>:<page>        blog detail with send targets
+ *   mt|ma|mc|mx|mb:<g>:<hash> toggle translate, toggle archive, set targets, clear targets,
+ *                            toggle the member's translation block
+ *   gb:<g>                   toggle the whole group's translation block
+ *   bl                       recent blogs: pick a group
+ *   rg:<g>:<page>            recent blogs: a group's members, most recently active first
+ *   rm:<g>:<hash>:<page>     recent blogs: one member's posts, newest first
+ *   b:<g>:<id>:<hash>:<page> blog detail with send targets (hash/page lead back to the list)
  *   bs:<g>:<id>:<hash>       translate + send blog to target
  *   noop                     inert button (page counter)
  */
 
 const MEMBERS_PER_PAGE = 8;
 const BLOGS_PER_PAGE = 8;
+const RECENT_MEMBERS_PER_PAGE = 10;
 const MAX_TARGET_BUTTONS = 20;
 
 export const shortHash = (value) => crypto.createHash('sha1').update(String(value)).digest('hex').slice(0, 8);
@@ -44,6 +51,8 @@ export const groupAt = (index) => GROUP_LIST[Number(index)] || null;
 const button = (text, data) => ({ text, callback_data: data });
 const backRow = (data = 'menu', text = '◀ Back') => [button(text, data)];
 const fmt = (n) => Number(n).toLocaleString('en-US');
+// "10-25" from an ISO timestamp, in JST.
+const shortDate = (iso) => iso ? formatJstTimestamp(iso).slice(5, 10) : '--/--';
 
 function truncate(text, max) {
     const chars = [...String(text || '')];
@@ -90,7 +99,7 @@ export function mainView() {
         reply_markup: {
             inline_keyboard: [
                 [button('📊 Status', 'st'), button('👥 Members', 'mg')],
-                [button('📰 Recent blogs', 'bl:0'), button('🧮 Quota', 'q')],
+                [button('📰 Recent blogs', 'bl'), button('🧮 Quota', 'q')],
                 [button(translationPaused ? '▶️ Resume translation' : '⏸ Pause translation', 'fl:t')],
                 [button(broadcastPaused ? '▶️ Resume broadcasting' : '⏸ Pause broadcasting', 'fl:b')],
                 [button('🔄 Refresh', 'menu')]
@@ -171,10 +180,11 @@ export async function listGroupMembers(groupName) {
     for (const entry of index) {
         if (entry.group !== groupName) continue;
         if (!members.has(entry.name)) {
-            members.set(entry.name, { name: entry.name, hash: shortHash(`${groupName}/${entry.name}`), latest: entry.dateTime, posts: 0, translated: 0, pending: 0 });
+            members.set(entry.name, { name: entry.name, hash: shortHash(`${groupName}/${entry.name}`), latest: entry.dateTime, posts: 0, translated: 0, pending: 0, blogs: [] });
         }
         const m = members.get(entry.name);
         m.posts += 1;
+        m.blogs.push(entry);
         if (entry.translated) m.translated += 1;
         else if (entry.hasSource) m.pending += 1;
     }
@@ -189,7 +199,8 @@ export async function memberGroupsView() {
     const rows = [];
     for (const [index, group] of GROUP_LIST.entries()) {
         const members = await listGroupMembers(group);
-        rows.push([button(`${group} (${members.length})`, `ml:${index}:0`)]);
+        const lock = isGroupTranslationBlocked(group) ? '🚫 ' : '';
+        rows.push([button(`${lock}${group} (${members.length})`, `ml:${index}:0`)]);
     }
     rows.push(backRow());
     return { text: '👥 <b>Members</b>\n\nPick a group.', reply_markup: { inline_keyboard: rows } };
@@ -197,7 +208,8 @@ export async function memberGroupsView() {
 
 function memberBadges(groupName, name) {
     const s = getMemberSettings(groupName, name);
-    return `${s.autoTranslate ? '🌐' : '⛔'}${s.archive ? '📦' : '🗑'}${s.chatIds?.length ? '📡' : ''}`;
+    const translate = isTranslationBlocked(groupName, name) ? '🚫' : s.autoTranslate ? '🌐' : '⛔';
+    return `${translate}${s.archive ? '📦' : '🗑'}${s.chatIds?.length ? '📡' : ''}`;
 }
 
 export async function memberListView(groupIndex, page) {
@@ -214,12 +226,15 @@ export async function memberListView(groupIndex, page) {
         `m:${groupIndex}:${m.hash}`
     )]);
     if (pageCount > 1) rows.push(pageRow(`ml:${groupIndex}`, current, pageCount));
+    const groupBlocked = isGroupTranslationBlocked(groupName);
+    rows.push([button(groupBlocked ? '✅ Unblock translation for this group' : '🚫 Block translation for this group', `gb:${groupIndex}`)]);
     rows.push(backRow('mg', '◀ Groups'));
 
     const text = [
         `👥 <b>${escapeHtml(groupName)}</b> · ${members.length} members`,
+        ...(groupBlocked ? ['', '🚫 <b>Translation blocked for the whole group.</b> Nothing from it is translated, manual sends included.'] : []),
         '',
-        '🌐 auto-translate on · ⛔ off',
+        '🌐 auto-translate on · ⛔ off · 🚫 blocked',
         '📦 archive on · 🗑 off',
         '📡 targets set from this panel',
         '⏳ untranslated archived posts'
@@ -234,6 +249,7 @@ export async function memberView(groupIndex, hash) {
     if (!member) return { text: 'Member not found. The list may have changed.', reply_markup: { inline_keyboard: [backRow('mg')] } };
 
     const settings = getMemberSettings(groupName, member.name);
+    const groupBlocked = isGroupTranslationBlocked(groupName);
     const routing = resolveDestinations(groupName, { ID: '', Name: member.name, Title: '' });
 
     const lines = [
@@ -241,6 +257,7 @@ export async function memberView(groupIndex, hash) {
         `Posts: ${fmt(member.posts)} · latest ${formatJstTimestamp(member.latest) || 'unknown'} JST`,
         `Archived: ✅ ${fmt(member.translated)} translated · ⏳ ${fmt(member.pending)} pending`,
         '',
+        `🚫 Translation block: <b>${settings.translationBlocked ? 'Blocked' : 'Not blocked'}</b>${groupBlocked ? ' (whole group blocked)' : ''}`,
         `🌐 Auto-translate: <b>${settings.autoTranslate ? 'On' : 'Off'}</b>`,
         `📦 Archive / backup: <b>${settings.archive ? 'On' : 'Off'}</b>`,
         `📡 Targets set here: ${settings.chatIds?.length ? settings.chatIds.map(c => `<code>${escapeHtml(c)}</code>`).join(', ') : 'none (config.json decides)'}`,
@@ -251,9 +268,11 @@ export async function memberView(groupIndex, hash) {
             : ['• nowhere'])
     ];
     if (!settings.archive) lines.push('', '🗑 Archive off: new posts are not saved to blogContent/ and are skipped by the backfill.');
-    if (!settings.autoTranslate) lines.push('', '⛔ Auto-translate off: posts are broadcast in Japanese and skipped by the backfill.');
+    if (!settings.autoTranslate) lines.push('', '⛔ Auto-translate off: posts are broadcast in Japanese and skipped by the backfill. Manual sends still translate.');
+    if (settings.translationBlocked || groupBlocked) lines.push('', '🚫 Blocked: never translated — not on archiving, not by the backfill, not when broadcasting, and not by manual sends.');
 
     const rows = [
+        [button(`🚫 Translation: ${settings.translationBlocked ? 'Blocked → Allow' : 'Allowed → Block'}`, `mb:${groupIndex}:${hash}`)],
         [button(`🌐 Auto-translate: ${settings.autoTranslate ? 'On → Off' : 'Off → On'}`, `mt:${groupIndex}:${hash}`)],
         [button(`📦 Archive: ${settings.archive ? 'On → Off' : 'Off → On'}`, `ma:${groupIndex}:${hash}`)],
         [button('📡 Set target chats', `mc:${groupIndex}:${hash}`)]
@@ -266,28 +285,84 @@ export async function memberView(groupIndex, hash) {
 
 // --- Recent blogs & manual send ---
 
-export async function recentBlogsView(page) {
+/** Recent blogs, step 1: pick a group. Each button shows its latest post. */
+export async function recentGroupsView() {
     const index = await getBlogIndex();
-    const pageCount = Math.max(1, Math.ceil(index.length / BLOGS_PER_PAGE));
-    const current = clampPage(page, pageCount);
-    const slice = index.slice(current * BLOGS_PER_PAGE, (current + 1) * BLOGS_PER_PAGE);
-
-    const rows = slice.map(e => {
-        const date = e.dateTime ? formatJstTimestamp(e.dateTime).slice(5, 10) : '--/--';
-        const state = e.translated ? '✅' : e.hasSource ? '⏳' : '∅';
-        return [button(`${state} ${date} ${truncate(e.name, 8)} · ${truncate(e.title, 22)}`, `b:${groupIndexOf(e.group)}:${e.id}:${current}`)];
-    });
-    rows.push(pageRow('bl', current, pageCount));
+    const rows = [];
+    for (const [groupIndex, group] of GROUP_LIST.entries()) {
+        const entries = index.filter(e => e.group === group);
+        const lock = isGroupTranslationBlocked(group) ? '🚫 ' : '';
+        rows.push([button(
+            `${lock}${group} · ${fmt(entries.length)} · latest ${shortDate(entries[0]?.dateTime)}`,
+            `rg:${groupIndex}:0`
+        )]);
+    }
     rows.push(backRow());
 
     const text = [
         `📰 <b>Recent blogs</b> · ${fmt(index.length)} total`,
         '',
-        '✅ translated archive · ⏳ archived, untranslated · ∅ no saved HTML',
-        'Open a post to translate and send it to a chat.'
+        'Pick a group, then a member.'
     ].join('\n');
 
     return { text, reply_markup: { inline_keyboard: rows } };
+}
+
+/** Recent blogs, step 2: a group's members, most recently active first. */
+export async function recentMembersView(groupIndex, page) {
+    const groupName = groupAt(groupIndex);
+    if (!groupName) return recentGroupsView();
+
+    const members = await listGroupMembers(groupName);
+    const pageCount = Math.max(1, Math.ceil(members.length / RECENT_MEMBERS_PER_PAGE));
+    const current = clampPage(page, pageCount);
+    const slice = members.slice(current * RECENT_MEMBERS_PER_PAGE, (current + 1) * RECENT_MEMBERS_PER_PAGE);
+
+    const rows = slice.map(m => {
+        const latest = m.blogs[0];
+        return [button(
+            `${shortDate(m.latest)} ${truncate(m.name, 10)} · ${truncate(latest?.title, 16)} (${m.posts})`,
+            `rm:${groupIndex}:${m.hash}:0`
+        )];
+    });
+    if (pageCount > 1) rows.push(pageRow(`rg:${groupIndex}`, current, pageCount));
+    rows.push(backRow('bl', '◀ Groups'));
+
+    const text = [
+        `📰 <b>${escapeHtml(groupName)}</b> · ${members.length} members`,
+        '',
+        'Members ordered by their latest post. Each button shows that post and the total count.'
+    ].join('\n');
+
+    return { text, reply_markup: { inline_keyboard: rows } };
+}
+
+/** Recent blogs, step 3: one member's posts, newest first. */
+export async function recentMemberBlogsView(groupIndex, hash, page) {
+    const groupName = groupAt(groupIndex);
+    const member = groupName ? await findMember(groupName, hash) : null;
+    if (!member) return { text: 'Member not found. The list may have changed.', reply_markup: { inline_keyboard: [backRow('bl', '◀ Groups')] } };
+
+    const pageCount = Math.max(1, Math.ceil(member.blogs.length / BLOGS_PER_PAGE));
+    const current = clampPage(page, pageCount);
+    const slice = member.blogs.slice(current * BLOGS_PER_PAGE, (current + 1) * BLOGS_PER_PAGE);
+
+    const rows = slice.map(e => {
+        const state = e.translated ? '✅' : e.hasSource ? '⏳' : '∅';
+        return [button(`${state} ${shortDate(e.dateTime)} · ${truncate(e.title || '(untitled)', 30)}`, `b:${groupIndex}:${e.id}:${hash}:${current}`)];
+    });
+    if (pageCount > 1) rows.push(pageRow(`rm:${groupIndex}:${hash}`, current, pageCount));
+    rows.push(backRow(`rg:${groupIndex}:0`, '◀ Members'));
+
+    const lines = [
+        `📰 <b>${escapeHtml(member.name)}</b> · ${escapeHtml(groupName)} · ${fmt(member.posts)} posts`,
+        '',
+        '✅ translated archive · ⏳ archived, untranslated · ∅ no saved HTML',
+        'Open a post to send it to a chat. A translated archive is reused, so sending it needs no new AI request.'
+    ];
+    if (isTranslationBlocked(groupName, member.name)) lines.push('', '🚫 Translation is blocked for this member: posts are sent in Japanese.');
+
+    return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
 }
 
 /** Builds the manifest shape the broadcaster expects from an index entry. */
@@ -317,11 +392,12 @@ export function getBlogTargets(groupName, blog) {
     return targets;
 }
 
-export async function blogView(groupIndex, blogId, page = 0) {
+export async function blogView(groupIndex, blogId, memberHash, page = 0) {
     const groupName = groupAt(groupIndex);
     const index = await getBlogIndex();
     const entry = index.find(e => e.group === groupName && e.id === String(blogId));
-    if (!entry) return { text: 'Blog not found.', reply_markup: { inline_keyboard: [backRow(`bl:${page}`)] } };
+    const back = backRow(`rm:${groupIndex}:${memberHash}:${page}`, '◀ Posts');
+    if (!entry) return { text: 'Blog not found.', reply_markup: { inline_keyboard: [back] } };
 
     const blog = blogFromEntry(entry);
     const targets = getBlogTargets(groupName, blog);
@@ -343,12 +419,17 @@ export async function blogView(groupIndex, blogId, page = 0) {
     } else if (!targets.length) {
         lines.push('No chats are configured. Add targets to a member or to config/config.json.');
     } else {
+        if (isTranslationBlocked(groupName, entry.name)) {
+            lines.push('🚫 Translation is blocked for this group or member, so it is sent in Japanese.');
+        } else if (entry.translated) {
+            lines.push('🗂 The translated archive is reused, so sending needs no new AI request.');
+        }
         lines.push('Tap a chat to translate this post and send it there. ⭐ = where its routing sends it. Manual sends ignore both pause switches and do not use the quota.');
         for (const target of targets.slice(0, MAX_TARGET_BUTTONS)) {
             rows.push([button(`${target.routed ? '⭐' : '➡️'} ${truncate(target.label, 28)} · ${target.chatId}`, `bs:${groupIndex}:${entry.id}:${target.hash}`)]);
         }
     }
-    rows.push(backRow(`bl:${page}`, '◀ Recent blogs'));
+    rows.push(back);
 
     return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
 }

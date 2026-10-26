@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { PATHS, GROUPS } from '../config/constants.js';
-import { getGroupConfig } from '../config/channels.js';
 import { loadBlogStatus } from '../utils/file-system.js';
-import { translateMessage } from './translate.js';
+import { translateAndArchive } from './archive-translation.js';
 import {
     isTranslationPaused,
     getMemberSettings,
+    isTranslationBlocked,
     tryConsumeQuota,
     getQuota,
     getBackfillFailures,
@@ -16,7 +16,8 @@ import {
 
 /**
  * Translates archived blog HTML (blogContent/) into blogContent_TC/ under a
- * daily quota, most recent posts first.
+ * daily quota, most recent posts first. New posts are normally translated as
+ * they are archived; the backfill covers older posts and retries failures.
  */
 
 export const GROUP_LIST = Object.values(GROUPS);
@@ -91,7 +92,7 @@ export async function findBlog(groupName, blogId) {
 /** Whether a member's archived posts take part in the backfill at all. */
 function memberInBackfill(entry) {
     const settings = getMemberSettings(entry.group, entry.name);
-    return settings.archive && settings.autoTranslate;
+    return settings.archive && settings.autoTranslate && !isTranslationBlocked(entry.group, entry.name);
 }
 
 /** Untranslated posts the backfill will pick up, newest first (LIFO). */
@@ -141,8 +142,6 @@ export async function runBackfill({ shouldStop = () => false } = {}) {
         if (!tryConsumeQuota()) { result.stopReason = 'quota'; break; }
 
         const sourcePath = path.join(PATHS.BLOG_CONTENT, entry.group, `${entry.id}.html`);
-        const targetDir = path.join(PATHS.BLOG_CONTENT_TC, entry.group);
-        const targetPath = path.join(targetDir, `${entry.id}.html`);
 
         let html;
         try {
@@ -152,23 +151,21 @@ export async function runBackfill({ shouldStop = () => false } = {}) {
             continue;
         }
 
-        const groupConfig = getGroupConfig(entry.group);
-        const translatedHtml = await translateMessage(html, entry.name, entry.group, {
-            preserveHtml: true,
-            glossary: groupConfig?.glossary,
-            targetLanguage: groupConfig?.translation.target_language,
-            thinkingLevel: groupConfig?.translation.thinking_level
-        });
+        const archived = await translateAndArchive({
+            group: entry.group,
+            id: entry.id,
+            name: entry.name,
+            title: entry.title,
+            html
+        }, 'backfill');
 
-        if (!translatedHtml) {
+        if (!archived) {
             recordBackfillFailure(entry.group, entry.id);
             result.failed += 1;
             console.error(`Translation failed blog Id ${entry.id} for ${entry.group} by ${entry.name} at ${entry.dateTime}`);
             continue;
         }
 
-        await fs.promises.mkdir(targetDir, { recursive: true });
-        await fs.promises.writeFile(targetPath, translatedHtml, 'utf-8');
         clearBackfillFailure(entry.group, entry.id);
         entry.translated = true;   // Keep the cached index in step without a rescan.
         result.translated += 1;

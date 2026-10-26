@@ -8,13 +8,15 @@ import { isOwnerUpdate, createRateLimiter } from './auth.js';
 import {
     mainView, statusView, quotaView,
     memberGroupsView, memberListView, memberView, findMember,
-    recentBlogsView, blogView, blogFromEntry, getBlogTargets, groupAt
+    recentGroupsView, recentMembersView, recentMemberBlogsView,
+    blogView, blogFromEntry, getBlogTargets, groupAt
 } from './views.js';
 import {
     isTranslationPaused, setTranslationPaused,
     isBroadcastPaused, setBroadcastPaused,
     getQuota, setDailyLimit, resetQuotaUsage,
-    getMemberSettings, updateMemberSettings
+    getMemberSettings, updateMemberSettings,
+    isGroupTranslationBlocked, setGroupTranslationBlocked
 } from '../admin-state.js';
 
 /**
@@ -134,6 +136,7 @@ async function handleCallback(bot, query) {
 
         case 'mt':
         case 'ma':
+        case 'mb':
         case 'mx': {
             const groupName = groupAt(args[0]);
             const member = groupName ? await findMember(groupName, args[1]) : null;
@@ -142,9 +145,19 @@ async function handleCallback(bot, query) {
             const current = getMemberSettings(groupName, member.name);
             if (action === 'mt') updateMemberSettings(groupName, member.name, { autoTranslate: !current.autoTranslate });
             if (action === 'ma') updateMemberSettings(groupName, member.name, { archive: !current.archive });
+            if (action === 'mb') updateMemberSettings(groupName, member.name, { translationBlocked: !current.translationBlocked });
             if (action === 'mx') updateMemberSettings(groupName, member.name, { chatIds: null });
             await toast(bot, query.id, 'Saved');
             return show(bot, await memberView(args[0], args[1]), target);
+        }
+
+        case 'gb': {
+            const groupName = groupAt(args[0]);
+            if (!groupName) return toast(bot, query.id, 'Group not found.', true);
+            const blocked = !isGroupTranslationBlocked(groupName);
+            setGroupTranslationBlocked(groupName, blocked);
+            await toast(bot, query.id, blocked ? `🚫 Translation blocked for ${groupName}` : `✅ Translation allowed for ${groupName}`);
+            return show(bot, await memberListView(args[0], 0), target);
         }
 
         case 'mc': {
@@ -168,12 +181,20 @@ async function handleCallback(bot, query) {
 
         case 'bl':
             await toast(bot, query.id);
-            if (Number(args[0]) === 0) invalidateBlogIndex();
-            return show(bot, await recentBlogsView(args[0]), target);
+            invalidateBlogIndex();
+            return show(bot, await recentGroupsView(), target);
+
+        case 'rg':
+            await toast(bot, query.id);
+            return show(bot, await recentMembersView(args[0], args[1]), target);
+
+        case 'rm':
+            await toast(bot, query.id);
+            return show(bot, await recentMemberBlogsView(args[0], args[1], args[2]), target);
 
         case 'b':
             await toast(bot, query.id);
-            return show(bot, await blogView(args[0], args[1], args[2]), target);
+            return show(bot, await blogView(args[0], args[1], args[2], args[3]), target);
 
         case 'bs': {
             const groupName = groupAt(args[0]);
@@ -185,7 +206,7 @@ async function handleCallback(bot, query) {
 
             if (manualJob) return toast(bot, query.id, '⏳ A manual send is already running. Try again when it finishes.', true);
 
-            await toast(bot, query.id, `🌐 Translating and sending to ${destination.label}…`);
+            await toast(bot, query.id, `📤 Sending to ${destination.label}…`);
             manualJob = runManualSend(bot, groupName, entry, destination);
             return;
         }

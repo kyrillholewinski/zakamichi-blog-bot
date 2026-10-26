@@ -9,9 +9,10 @@ import {
 import { resolveDestinations, isGroupBroadcastEnabled } from '../config/channels.js';
 import { parseBlogHtml, classifyBlocks } from './blog-content.js';
 import { translateBlogPost } from './translate.js';
+import { loadArchivedTranslation, blocksFromArchive } from './archive-translation.js';
 import { buildBlogMessage } from './message-builder.js';
 import { getBot } from './telegram.js';
-import { isBroadcastPaused, isTranslationPaused, getMemberSettings } from './admin-state.js';
+import { isBroadcastPaused, canAutoTranslate, isTranslationBlocked } from './admin-state.js';
 import { enqueueBroadcast, listQueue, removeFromQueue, recordQueueAttempt } from './broadcast-queue.js';
 import { sleep } from '../utils/misc.js';
 
@@ -183,8 +184,12 @@ async function broadcastBlogNow(groupName, blog, html, options) {
     }
 
     const sourceUrl = resolveSourceUrl(groupName, blog);
-    const autoTranslate = !isTranslationPaused() && getMemberSettings(groupName, blog.Name).autoTranslate;
+    const baseUrl = GROUP_BASE_URLS[groupName];
+    // A block wins over everything, manual sends included.
+    const blocked = isTranslationBlocked(groupName, blog.Name);
+    const autoTranslate = canAutoTranslate(groupName, blog.Name);
     const translationCache = new Map();
+    let archived;   // Loaded on first use; null once known to be missing.
     let statusDirty = false;
 
     for (const destination of pending) {
@@ -192,10 +197,20 @@ async function broadcastBlogNow(groupName, blog, html, options) {
 
         // --- Translate (once per distinct translation configuration) ---
         let translated = { title: null, blocks };
-        const shouldTranslate = forceTranslate || (autoTranslate && translation.enabled !== false);
+        const shouldTranslate = !blocked && (forceTranslate || (autoTranslate && translation.enabled !== false));
         if (shouldTranslate) {
             const signature = translationSignature(translation, glossary);
             if (!translationCache.has(signature)) {
+                // Prefer the translated archive; only fall back to a new AI request without one.
+                if (archived === undefined) archived = await loadArchivedTranslation(groupName, blog.ID);
+                const fromArchive = blocksFromArchive(blocks, archived, translation, baseUrl);
+                if (fromArchive) {
+                    console.log(`🗂 Using archived translation of ${groupName}/${blog.ID} for "${label}".`);
+                    translationCache.set(signature, fromArchive);
+                }
+            }
+            if (!translationCache.has(signature)) {
+                if (archived) console.warn(`⚠️ Archived translation of ${groupName}/${blog.ID} does not fit "${label}". Translating afresh.`);
                 console.log(`🌐 Translating ${groupName}/${blog.ID} by ${blog.Name} for "${label}"...`);
                 translationCache.set(signature, await translateBlogPost(
                     { title: blog.Title, blocks, member: blog.Name, group: groupName },
@@ -252,7 +267,8 @@ async function broadcastBlogNow(groupName, blog, html, options) {
  * @param {object} [options]
  * @param {Array<object>} [options.destinations] - Send here instead of the configured routes.
  * @param {boolean} [options.force] - Ignore and don't update the delivery record (manual sends).
- * @param {boolean} [options.forceTranslate] - Translate even if paused or switched off for the member.
+ * @param {boolean} [options.forceTranslate] - Translate even if paused or switched off for the member
+ *                                            (never when the group or member is blocked).
  * @returns {Promise<{sent: number, skipped: number, failed: number}>}
  */
 export function broadcastBlog(groupName, blog, html = null, options = {}) {

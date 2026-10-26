@@ -48,7 +48,7 @@ A cycle that is still running when the next one is due makes the next one skip.
 | Time (JST) | What runs |
 | --- | --- |
 | Every cycle | Retry posts waiting in the broadcast queue |
-| 08:00 – 23:59 | Crawl Hinatazaka46, Sakurazaka46 and Nogizaka46, then broadcast new posts |
+| 08:00 – 23:59 | Crawl Hinatazaka46, Sakurazaka46 and Nogizaka46, translate new posts into the archive, then broadcast them |
 | 10:00 – 10:59 | Bokuao is also crawled |
 | 00:00 – 07:59 | Backfill: translate archived HTML into `blogContent_TC/`, newest first, up to the daily quota (only when `ENABLE_TRANSLATION=true`) |
 | 00:00 UTC (09:00 JST) | The daily backfill quota resets |
@@ -57,8 +57,10 @@ A cycle that is still running when the next one is due makes the next one skip.
 
 ```
 crawler → blogContent/<Group>/<id>.html          (skipped when archiving is off for the member)
+        → archive-translation.js  translate the new post into blogContent_TC/<Group>/<id>.html + .json
         → blog-content.js     parse HTML into ordered text/image/video blocks
-        → translate.js        translate title + body + image captions
+        → broadcaster.js      reuse the archived translation (no new AI request);
+                              translate.js only runs when there is no usable archive
         → message-builder.js  format header / body / footer, split for Telegram limits
         → telegram.js         send albums + follow-up messages
         → record/<Group>/BroadcastStatus.JSON    (failures and paused posts → broadcast queue)
@@ -77,6 +79,7 @@ crawlers/                    one crawler per group, built on base.js
 services/
   blog-content.js            HTML → ordered blocks; detects image captions
   translate.js               Gemini translation
+  archive-translation.js     translate-on-archive, reading the translated archive back for broadcasts
   message-builder.js         Telegram captions and messages
   telegram.js                Bot API client
   broadcaster.js             translate → format → send, delivery records, queue retries
@@ -90,7 +93,8 @@ services/
     bot.js                   long polling, button handling, chat-id input
 utils/                       HTTP, file system, date parsing helpers
 blogContent/                 raw article HTML per group
-blogContent_TC/              translated article HTML from the backfill
+blogContent_TC/              translated article HTML (+ <id>.json with the translated title),
+                             written on archiving and by the backfill
 record/                      per-group BlogStatus.JSON / BroadcastStatus.JSON,
                              admin-state.json, broadcast-queue.json
 ```
@@ -149,11 +153,13 @@ Telegram refuses polling and the log says so; remove the webhook first.
 🛠 Admin Panel
 ├─ 📊 Status            translated / pending counts, per group and per member, quota, queue
 ├─ 👥 Members           pick a group → member list → member
+│   ├─ 🚫 Block translation for this group   (button under the member list)
+│   ├─ 🚫 Translation blocked / allowed       (per member)
 │   ├─ 🌐 Auto-translate on/off
 │   ├─ 📦 Archive / backup on/off
 │   ├─ 📡 Set target chats      (reply with ids, "-" to clear, /cancel to abort)
 │   └─ 🧹 Clear targets         (back to config.json routing)
-├─ 📰 Recent blogs      newest first, 8 per page → blog → pick a chat → translate + send
+├─ 📰 Recent blogs      group → members (latest post first) → member's posts → pick a chat → send
 ├─ 🧮 Quota             change the daily limit (±1 / ±10), reset today's usage
 ├─ ⏸ Pause / ▶️ Resume translation
 └─ ⏸ Pause / ▶️ Resume broadcasting
@@ -163,9 +169,10 @@ Telegram refuses polling and the log says so; remove the webhook first.
 
 | Switch | When off / paused |
 | --- | --- |
-| **Translation** (global) | The backfill stops, and live broadcasts go out in Japanese. |
+| **Translation** (global) | New posts are not translated on archiving, the backfill stops, and live broadcasts go out in Japanese. |
 | **Broadcasting** (global) | New posts wait in the broadcast queue. Resuming sends them right away, oldest first. |
-| **Auto-translate** (member) | The member's posts are broadcast in Japanese and skipped by the backfill. |
+| **Translation block** (group or member) | Never translated: not on archiving, not by the backfill, not when broadcasting, and not by manual sends. Stronger than auto-translate off. |
+| **Auto-translate** (member) | The member's posts are not translated on archiving, are broadcast in Japanese and are skipped by the backfill. Manual sends still translate. |
 | **Archive / backup** (member) | New posts are not saved to `blogContent/` and are skipped by the backfill. They are still recorded in `BlogStatus.JSON` and still broadcast. |
 | **Target chats** (member) | Set: they replace the member's `config.json` route. Group and category routes still apply. They work even when the group is disabled in `config.json`. |
 
@@ -175,26 +182,45 @@ must be an admin of the chat.
 
 ### Manual send
 
-Open a post from **Recent blogs** and tap a chat. The post is translated and sent there. ⭐ marks
+Open a post from **Recent blogs** (group → member → post) and tap a chat. The post is sent there in
+translation, reusing the translated archive when it exists so no new AI request is made. ⭐ marks
 the chats its routing would use, and **My DM (preview)** sends it to you. Manual sends ignore both pause
-switches and the member's auto-translate setting, do not use the quota, and are not recorded in
+switches and the member's auto-translate setting (but not a translation block), do not use the quota, and are not recorded in
 `BroadcastStatus.JSON`, so you can send the same post again. Posts without saved HTML (shown as ∅)
 cannot be sent.
 
+## Translation on archiving
+
+When the crawler finds a new post and archives it to `blogContent/`, it translates it right away into
+`blogContent_TC/<Group>/<id>.html`, with the translated title in `<id>.json`. Title and body go out in
+a single Gemini request. This runs before the broadcast, so the broadcaster reuses the archived
+translation instead of making its own AI request.
+
+- Skipped for members with archiving or auto-translate off, a blocked group or member, while
+  translation is paused, and for posts older than `ARCHIVE_TRANSLATE_MAX_AGE_HOURS` (default 72), so a
+  first crawl into an empty archive leaves the old backlog to the quota-limited backfill.
+- Does not use the backfill quota. A failed post is retried later by the backfill.
+- `TRANSLATE_ON_ARCHIVE=false` turns it off.
+
+The broadcaster falls back to a fresh translation only when the archive is missing, is in a different
+`target_language` than the chat wants, or no longer lines up with the original's text/image layout.
+
 ## Backfill and daily quota
 
-The backfill translates archived HTML from `blogContent/` into `blogContent_TC/`:
+The backfill translates older archived HTML from `blogContent/` into `blogContent_TC/` (same format as
+translation on archiving):
 
 - **Newest first.** Posts are processed in reverse chronological order. Posts with no date (HTML without
   a `BlogStatus.JSON` record) come last.
 - **Daily quota.** At most `dailyLimit` attempts per UTC day; each attempt counts, including failures.
   The counter resets at 00:00 UTC, both from a timer and whenever the quota is read, so a restart or a
   sleeping machine never carries usage into the next day.
-- **Skips:** posts of members with auto-translate or archiving off, and posts that failed 3 times.
+- **Skips:** posts of members with auto-translate or archiving off, blocked groups and members, and
+  posts that failed 3 times.
 - **Stops** when the quota runs out, translation is paused, or the 08:00 JST polling window opens.
 
 "Translated" in the status view means a `blogContent_TC/` copy exists. "Pending" means saved HTML
-without one. Live broadcasts translate each post for Telegram but do not write to `blogContent_TC/`.
+without one.
 
 ## Configuration
 
@@ -316,8 +342,9 @@ that missed the post receive it. A post that still fails after 5 retries is drop
   "quota": { "dailyLimit": 50, "date": "2026-10-25", "used": 12 },   // date is the UTC day
   "members": {
     // only members whose settings differ from the defaults (all on, no targets)
-    "Hinatazaka46/金村美玖": { "autoTranslate": false, "archive": true, "chatIds": ["-1001234567890"] }
+    "Hinatazaka46/金村美玖": { "autoTranslate": false, "archive": true, "translationBlocked": false, "chatIds": ["-1001234567890"] }
   },
+  "blockedGroups": ["Bokuao"],                        // groups whose translation is blocked
   "backfillFailures": { "Hinatazaka46/104023": 1 }   // posts are skipped after 3
 }
 ```
@@ -328,6 +355,8 @@ that missed the post receive it. A post that still fails after 5 retries is drop
 | --- | --- |
 | `POLLING_INTERVAL_MS` | Cycle interval in **seconds**, despite the name (default `900`) |
 | `ENABLE_TRANSLATION` | `true` enables the overnight backfill into `blogContent_TC/` |
+| `TRANSLATE_ON_ARCHIVE` | `false` stops translating new posts as they are archived (default on) |
+| `ARCHIVE_TRANSLATE_MAX_AGE_HOURS` | Only posts younger than this are translated on archiving (default `72`) |
 | `ENABLE_BROADCAST` | `false` turns off all Telegram broadcasting (default on) |
 | `CONFIG_FILE_NAME` | Path to the broadcast config (default `config/config.json`) |
 | `ADMIN_BOT_TOKEN` | Token of the bot that serves the admin panel |

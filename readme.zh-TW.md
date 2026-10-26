@@ -47,7 +47,7 @@ Bot 必須是每個目標頻道的管理員，並具有發送訊息的權限。
 | 時間（JST） | 執行內容 |
 | --- | --- |
 | 每一輪 | 重試推送佇列中等待中的文章 |
-| 08:00 – 23:59 | 爬取日向坂46、櫻坂46、乃木坂46，並推送新文章 |
+| 08:00 – 23:59 | 爬取日向坂46、櫻坂46、乃木坂46，將新文章翻譯進存檔後再推送 |
 | 10:00 – 10:59 | 額外爬取僕が見たかった青空（Bokuao） |
 | 00:00 – 07:59 | 補翻譯：把已存檔的 HTML 翻譯到 `blogContent_TC/`，由新到舊，直到用完每日額度（需設定 `ENABLE_TRANSLATION=true`） |
 | UTC 00:00（JST 09:00） | 重設每日補翻譯額度 |
@@ -56,8 +56,10 @@ Bot 必須是每個目標頻道的管理員，並具有發送訊息的權限。
 
 ```
 爬蟲 → blogContent/<團體>/<id>.html             （成員關閉存檔時略過）
+     → archive-translation.js  將新文章翻譯到 blogContent_TC/<團體>/<id>.html 與 .json
      → blog-content.js     將 HTML 解析為依序排列的文字／圖片／影片區塊
-     → translate.js        翻譯標題、內文與圖片說明
+     → broadcaster.js      直接沿用存檔中的翻譯（不再發出新的 AI 請求）；
+                           只有在沒有可用存檔時才呼叫 translate.js
      → message-builder.js  組成標頭／內文／頁尾，並依 Telegram 長度限制分段
      → telegram.js         發送相簿與後續文字訊息
      → record/<團體>/BroadcastStatus.JSON       （發送失敗或暫停中的文章 → 推送佇列）
@@ -76,6 +78,7 @@ crawlers/                    各團體的爬蟲，皆繼承自 base.js
 services/
   blog-content.js            HTML → 依序排列的區塊；辨識圖片說明
   translate.js               Gemini 翻譯
+  archive-translation.js     存檔時翻譯，並在推送時讀回翻譯存檔
   message-builder.js         Telegram 圖片說明與訊息
   telegram.js                Bot API 用戶端
   broadcaster.js             翻譯 → 排版 → 發送，記錄推送結果並重試佇列
@@ -89,7 +92,8 @@ services/
     bot.js                   長輪詢、按鈕處理、頻道 ID 輸入
 utils/                       HTTP、檔案系統、日期解析等工具
 blogContent/                 各團體的原始文章 HTML
-blogContent_TC/              補翻譯產生的翻譯版文章 HTML
+blogContent_TC/              翻譯版文章 HTML（另有 <id>.json 存放翻譯後標題），
+                             由存檔時翻譯與補翻譯寫入
 record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON、
                              admin-state.json、broadcast-queue.json
 ```
@@ -142,11 +146,13 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 🛠 管理面板
 ├─ 📊 狀態              已翻譯／待翻譯數量（依團體與成員）、額度、佇列
 ├─ 👥 成員              選擇團體 → 成員清單 → 成員
+│   ├─ 🚫 封鎖整個團體的翻譯      （成員清單下方的按鈕）
+│   ├─ 🚫 翻譯 封鎖／允許          （個別成員）
 │   ├─ 🌐 自動翻譯 開／關
 │   ├─ 📦 存檔／備份 開／關
 │   ├─ 📡 設定推送目標          （回覆頻道 ID；「-」清除；/cancel 取消）
 │   └─ 🧹 清除推送目標          （改回使用 config.json 的設定）
-├─ 📰 最新文章          由新到舊，每頁 8 篇 → 文章 → 選擇聊天室 → 翻譯並發送
+├─ 📰 最新文章          團體 → 成員（依最新文章排序）→ 該成員的文章 → 選擇聊天室 → 發送
 ├─ 🧮 額度              調整每日上限（±1／±10）、重設今日用量
 ├─ ⏸ 暫停／▶️ 繼續 翻譯
 └─ ⏸ 暫停／▶️ 繼續 推送
@@ -156,9 +162,10 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 
 | 開關 | 關閉／暫停時 |
 | --- | --- |
-| **翻譯**（全域） | 停止補翻譯；即時推送改發日文原文。 |
+| **翻譯**（全域） | 新文章存檔時不翻譯、停止補翻譯；即時推送改發日文原文。 |
 | **推送**（全域） | 新文章進入推送佇列等待。恢復後會立即由舊到新發送。 |
-| **自動翻譯**（成員） | 該成員的文章以日文原文推送，並且不列入補翻譯。 |
+| **翻譯封鎖**（團體或成員） | 完全不翻譯：存檔時、補翻譯、推送與手動推送都不翻譯。比關閉自動翻譯更嚴格。 |
+| **自動翻譯**（成員） | 該成員的文章存檔時不翻譯、以日文原文推送，並且不列入補翻譯；手動推送仍會翻譯。 |
 | **存檔／備份**（成員） | 新文章不會存到 `blogContent/`，也不列入補翻譯；但仍會記錄在 `BlogStatus.JSON` 並照常推送。 |
 | **推送目標**（成員） | 設定後會取代該成員在 `config.json` 中的推送設定；團體與分類的推送仍然有效。即使團體在 `config.json` 中為停用狀態也會生效。 |
 
@@ -167,22 +174,33 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 
 ### 手動推送
 
-從**最新文章**開啟一篇文章，再點選一個聊天室，就會翻譯並發送過去。⭐ 表示該文章依推送規則會送達的聊天室，
-**My DM (preview)** 則會發送給你自己。手動推送不受兩個暫停開關與成員自動翻譯設定影響，不佔用額度，
+從**最新文章**（團體 → 成員 → 文章）開啟一篇文章，再點選一個聊天室，就會以翻譯版發送過去；若已有翻譯存檔則直接沿用，不會再發出新的 AI 請求。⭐ 表示該文章依推送規則會送達的聊天室，
+**My DM (preview)** 則會發送給你自己。手動推送不受兩個暫停開關與成員自動翻譯設定影響（但翻譯封鎖仍然有效），不佔用額度，
 也不會寫入 `BroadcastStatus.JSON`，因此同一篇文章可以重複發送。沒有存檔 HTML 的文章（標示為 ∅）無法發送。
+
+## 存檔時翻譯
+
+爬蟲發現新文章並存檔到 `blogContent/` 後，會立即翻譯到 `blogContent_TC/<團體>/<id>.html`，翻譯後的標題存於
+`<id>.json`。標題與內文只用一次 Gemini 請求。這一步在推送之前執行，因此推送時直接沿用翻譯存檔，不再發出新的 AI 請求。
+
+- 以下情況略過：成員關閉存檔或自動翻譯、團體或成員被封鎖翻譯、翻譯已暫停，以及發布超過
+  `ARCHIVE_TRANSLATE_MAX_AGE_HOURS`（預設 72 小時）的文章。因此第一次爬取空的存檔時，舊文章會交給有額度限制的補翻譯處理。
+- 不佔用補翻譯額度；翻譯失敗的文章之後由補翻譯重試。
+- 設定 `TRANSLATE_ON_ARCHIVE=false` 可關閉此功能。
+
+只有在沒有翻譯存檔、存檔的 `target_language` 與聊天室要求不同，或存檔與原文的文字／圖片結構對不上時，推送才會重新翻譯。
 
 ## 補翻譯與每日額度
 
-補翻譯會把 `blogContent/` 中已存檔的 HTML 翻譯到 `blogContent_TC/`：
+補翻譯會把 `blogContent/` 中較舊的已存檔 HTML 翻譯到 `blogContent_TC/`（格式與存檔時翻譯相同）：
 
 - **由新到舊。** 依發布時間倒序處理。沒有日期的文章（有 HTML 但 `BlogStatus.JSON` 中沒有紀錄）排在最後。
 - **每日額度。** 每個 UTC 日最多嘗試 `dailyLimit` 次；每次嘗試都會計入，失敗也一樣。
   計數會在 UTC 00:00 重設：由計時器觸發，且每次讀取額度時也會檢查，因此重新啟動或電腦休眠都不會把用量帶到隔天。
-- **略過：** 關閉自動翻譯或存檔的成員的文章，以及失敗 3 次的文章。
+- **略過：** 關閉自動翻譯或存檔的成員的文章、被封鎖翻譯的團體與成員，以及失敗 3 次的文章。
 - **停止條件：** 額度用完、翻譯已暫停，或到了 JST 08:00 的輪詢時段。
 
 狀態畫面中的「已翻譯」指的是 `blogContent_TC/` 中已有翻譯檔；「待翻譯」指的是有存檔 HTML 但尚未翻譯。
-即時推送會為 Telegram 翻譯文章，但不會寫入 `blogContent_TC/`。
 
 ## 設定
 
@@ -298,8 +316,9 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
   "quota": { "dailyLimit": 50, "date": "2026-10-25", "used": 12 },   // date 為 UTC 日期
   "members": {
     // 只記錄與預設值（全部開啟、無推送目標）不同的成員
-    "Hinatazaka46/金村美玖": { "autoTranslate": false, "archive": true, "chatIds": ["-1001234567890"] }
+    "Hinatazaka46/金村美玖": { "autoTranslate": false, "archive": true, "translationBlocked": false, "chatIds": ["-1001234567890"] }
   },
+  "blockedGroups": ["Bokuao"],                        // 封鎖翻譯的團體
   "backfillFailures": { "Hinatazaka46/104023": 1 }   // 失敗 3 次後略過
 }
 ```
@@ -310,6 +329,8 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 | --- | --- |
 | `POLLING_INTERVAL_MS` | 執行間隔，單位是**秒**（雖然名稱是 MS），預設 `900` |
 | `ENABLE_TRANSLATION` | 設為 `true` 時啟用夜間補翻譯，輸出到 `blogContent_TC/` |
+| `TRANSLATE_ON_ARCHIVE` | 設為 `false` 時，新文章存檔時不再立即翻譯（預設開啟） |
+| `ARCHIVE_TRANSLATE_MAX_AGE_HOURS` | 只有發布時間在此時數內的文章會在存檔時翻譯（預設 `72`） |
 | `ENABLE_BROADCAST` | 設為 `false` 時關閉所有 Telegram 推送（預設開啟） |
 | `CONFIG_FILE_NAME` | 推送設定檔路徑（預設 `config/config.json`） |
 | `ADMIN_BOT_TOKEN` | 提供管理面板的 Bot Token |

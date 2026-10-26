@@ -14,7 +14,7 @@ const geminiModels = [
     GEMINI_API_MODEL_3
 ];
 
-const DEFAULT_TARGET_LANGUAGE = 'Traditional Chinese (Taiwan)';
+export const DEFAULT_TARGET_LANGUAGE = 'Traditional Chinese (Taiwan)';
 
 // Maps abstract thinking levels to Gemini thinking budgets (reasoning tokens).
 // Values are valid across the whole retry chain: gemini-2.5-pro requires >= 128,
