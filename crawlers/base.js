@@ -5,6 +5,7 @@ import { broadcastBlogs } from '../services/broadcaster.js';
 import { translateNewArchives } from '../services/archive-translation.js';
 import { invalidateBlogIndex } from '../services/backfill.js';
 import { getMemberSettings } from '../services/admin-state.js';
+import { recordCrawl } from '../services/schedule.js';
 
 export class BaseCrawler {
     constructor(groupName, memberMap) {
@@ -26,6 +27,7 @@ export class BaseCrawler {
 
     async run() {
         console.log(`\n--- 🚀 Starting ${this.groupName} ---`);
+        const startedAt = new Date();
         this.existingBlogs = await loadBlogStatus(this.groupName);
         this.newBlogs = [];
         const startCount = Object.keys(this.existingBlogs).length;
@@ -73,6 +75,7 @@ export class BaseCrawler {
         } else {
             console.log(`✅ Up to date.`);
         }
+        recordCrawl(this.groupName, { startedAt, newPosts: this.newBlogsCount });
     }
 
     async processPage(pageNumber) {

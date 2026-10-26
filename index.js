@@ -8,17 +8,12 @@ import { runBackfill } from './services/backfill.js';
 import { drainBroadcastQueue } from './services/broadcaster.js';
 import { scheduleDailyQuotaReset } from './services/scheduler.js';
 import { startAdminBot } from './services/admin/bot.js';
+import {
+    WINDOWS, isWithin, jstHour,
+    markSchedulerStarted, recordCycleStart, recordCycleEnd, recordCycleSkipped, recordBackfill
+} from './services/schedule.js';
 
-const isPollingActive = () => {
-    const hour = (new Date().getUTCHours() + 9) % 24
-    return hour > 7
-};
-
-const isBokuaoPollingActive = () => {
-    const hour = (new Date().getUTCHours() + 9) % 24
-    console.log('Bokuao Polling Hour:', hour);
-    return hour === 10
-};
+const isPollingActive = () => isWithin(WINDOWS.crawl);
 
 let cycleRunning = false;
 
@@ -26,12 +21,16 @@ async function runAll() {
     // A quota-limited backfill can outlast the interval; never run two cycles at once.
     if (cycleRunning) {
         console.log('Previous cycle still running. Skipping this one.');
+        recordCycleSkipped();
         return;
     }
     cycleRunning = true;
 
+    const isPollingTime = isPollingActive();
+    recordCycleStart(isPollingTime ? 'crawl' : 'backfill');
+    let cycleError = null;
+
     try {
-        const isPollingTime = isPollingActive();
         console.log(`Starting Cycle at ${new Date().toLocaleTimeString()} for ${isPollingTime ? 'Polling' : 'Translation'}`);
 
         // Pick up config/config.json edits before anything broadcasts, so channel
@@ -43,17 +42,20 @@ async function runAll() {
 
         if (!isPollingTime) {
             // Overnight backfill: newest posts first, capped by the daily quota.
-            if (ENABLE_TRANSLATION) await runBackfill({ shouldStop: isPollingActive });
+            if (ENABLE_TRANSLATION) {
+                const startedAt = new Date();
+                const result = await runBackfill({ shouldStop: isPollingActive });
+                recordBackfill(startedAt, result);
+            }
         } else {
             console.log('Polling active. Skipping translation.');
-            // Logic: Run major groups always, Bokuao only at specific time (optional)
             const crawlers = [
                 new HinatazakaCrawler(),
                 new SakurazakaCrawler(),
                 new NogizakaCrawler()
             ];
-            const isBokuaoPollingTime = isBokuaoPollingActive();
-            if (isBokuaoPollingTime) {
+            if (isWithin(WINDOWS.bokuao)) {
+                console.log('Bokuao Polling Hour:', jstHour());
                 crawlers.push(new BokuaoCrawler());
             }
             // Run sequentially to save CPU, or Promise.all for speed
@@ -62,8 +64,10 @@ async function runAll() {
         }
         console.log('Cycle Complete.');
     } catch (err) {
+        cycleError = err;
         console.error(`Cycle failed: ${err.stack || err.message}`);
     } finally {
+        recordCycleEnd(cycleError);
         cycleRunning = false;
     }
 }
@@ -72,6 +76,7 @@ scheduleDailyQuotaReset();
 startAdminBot();
 
 // Initial Run
+markSchedulerStarted();
 runAll();
 
 // Schedule

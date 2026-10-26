@@ -6,17 +6,20 @@ import { escapeHtml } from '../message-builder.js';
 import { sleep } from '../../utils/misc.js';
 import { isOwnerUpdate, createRateLimiter } from './auth.js';
 import {
-    mainView, statusView, quotaView,
-    memberGroupsView, memberListView, memberView, findMember,
+    mainView, statusView, quotaView, scheduleView,
+    memberGroupsView, memberListView, memberView, memberTargetsView, findMember,
+    chatsView, chatView, findChat,
     recentGroupsView, recentMembersView, recentMemberBlogsView,
     blogView, blogFromEntry, getBlogTargets, groupAt
 } from './views.js';
+import { chatKindIcon } from './chat-directory.js';
 import {
     isTranslationPaused, setTranslationPaused,
     isBroadcastPaused, setBroadcastPaused,
     getQuota, setDailyLimit, resetQuotaUsage,
     getMemberSettings, updateMemberSettings,
-    isGroupTranslationBlocked, setGroupTranslationBlocked
+    isGroupTranslationBlocked, setGroupTranslationBlocked,
+    recordKnownChat, getKnownChat, forgetKnownChat
 } from '../admin-state.js';
 
 /**
@@ -33,6 +36,8 @@ const INPUT_TTL_MS = 5 * 60 * 1000;
 const CHAT_ID_PATTERN = /^(-?\d{5,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$/;
 
 const allowAction = createRateLimiter({ capacity: 20, refillPerMinute: 30 });
+// Anyone can add the bot to their group, so "added to …" notices to the owner are capped.
+const allowMembershipNotice = createRateLimiter({ capacity: 5, refillPerMinute: 1 });
 
 let pendingInput = null;     // { kind: 'memberChats', groupIndex, hash, memberName, expiresAt }
 let manualJob = null;        // the one manual send allowed at a time
@@ -95,6 +100,50 @@ async function handleCallback(bot, query) {
             await toast(bot, query.id, 'Counting…');
             invalidateBlogIndex();
             return show(bot, await statusView(), target);
+
+        case 'sc':
+            await toast(bot, query.id);
+            return show(bot, scheduleView(), target);
+
+        case 'ch': {
+            const fresh = args[0] === 'r';
+            await toast(bot, query.id, fresh ? 'Asking Telegram about every chat…' : undefined);
+            return show(bot, await chatsView(fresh ? 0 : args[0], { fresh }), target);
+        }
+
+        case 'cv':
+        case 'cr':
+            await toast(bot, query.id, action === 'cr' ? 'Re-checking…' : undefined);
+            return show(bot, await chatView(args[0], { fresh: action === 'cr' }), target);
+
+        case 'cf': {
+            const chat = await findChat(args[0]);
+            if (!chat?.joined || chat.joined.active || chat.routes.length) {
+                return toast(bot, query.id, 'Only a chat the bot has left, with no routes, can be forgotten.', true);
+            }
+            forgetKnownChat(chat.chatId);
+            await toast(bot, query.id, 'Forgotten');
+            return show(bot, await chatsView(0), target);
+        }
+
+        case 'mp':
+            await toast(bot, query.id, 'Loading chats…');
+            return show(bot, await memberTargetsView(args[0], args[1], args[2]), target);
+
+        case 'mpt': {
+            const groupName = groupAt(args[0]);
+            const member = groupName ? await findMember(groupName, args[1]) : null;
+            const chat = await findChat(args[2]);
+            if (!member || !chat) return toast(bot, query.id, 'That member or chat is no longer listed.', true);
+
+            const current = getMemberSettings(groupName, member.name).chatIds || [];
+            const on = !current.includes(chat.chatId);
+            updateMemberSettings(groupName, member.name, {
+                chatIds: on ? [...current, chat.chatId] : current.filter(id => id !== chat.chatId)
+            });
+            await toast(bot, query.id, `${on ? '✅ Added' : '⬜ Removed'} ${chat.label}`);
+            return show(bot, await memberTargetsView(args[0], args[1], args[3]), target);
+        }
 
         case 'fl': {
             if (args[0] === 't') {
@@ -267,9 +316,59 @@ async function handleMessage(bot, message) {
     return show(bot, await memberView(groupIndex, hash));
 }
 
+// --- The bot being added to / removed from chats ---
+
+const ACTIVE = new Set(['creator', 'administrator', 'member']);
+
+function canPostIn(chat, member) {
+    if (chat.type === 'channel') {
+        return member.status === 'creator' || (member.status === 'administrator' && member.can_post_messages === true);
+    }
+    return ACTIVE.has(member.status) || (member.status === 'restricted' && member.can_send_messages === true);
+}
+
+/**
+ * Records a my_chat_member update so the chat shows up under 📢 Chats.
+ *
+ * These updates come from whoever added or removed the bot, usually not the
+ * owner, so nothing is ever sent back into that chat. The owner gets a short
+ * notice in their DM when the bot gains or loses the ability to post there.
+ */
+async function handleMembership(bot, update) {
+    const { chat, from, new_chat_member: member } = update;
+    if (!chat || !member || chat.type === 'private') return;   // DMs: a user blocking/unblocking the bot.
+
+    const canPost = canPostIn(chat, member);
+    const previous = recordKnownChat(chat, {
+        status: member.status,
+        canPost,
+        addedBy: from?.id ?? null,
+        addedByName: [from?.first_name, from?.last_name].filter(Boolean).join(' ') || (from?.username ? `@${from.username}` : null)
+    });
+    const now = getKnownChat(chat.id);
+    console.log(`[admin] Bot is now "${member.status}" in ${chat.type} ${chat.id} (${now.title}); can post: ${canPost}.`);
+
+    if (Boolean(previous?.active) === now.active && previous?.status === now.status) return;
+    if (!allowMembershipNotice()) return;
+
+    const who = from && String(from.id) !== OWNER_USER_ID ? ` by ${escapeHtml(now.addedByName || 'someone')} (<code>${from.id}</code>)` : '';
+    const name = `${chatKindIcon(chat.type)} <b>${escapeHtml(now.title)}</b> <code>${escapeHtml(now.id)}</code>`;
+    let text;
+    if (now.active) {
+        text = `📢 Added to ${name}${who}. It is listed under /admin → 📢 Chats; route a member to it to start posting there.`;
+    } else if (ACTIVE.has(member.status)) {
+        text = `⚠️ In ${name}${who}, but I can't post there. Make me an admin with "Post messages".`;
+    } else {
+        text = `🚪 Removed from ${name}${who}. Posts routed there will fail until I'm added back.`;
+    }
+    await bot.sendMessage(OWNER_USER_ID, text, html);
+}
+
 // --- Update loop ---
 
 async function handleUpdate(bot, update) {
+    if (update.my_chat_member) return handleMembership(bot, update.my_chat_member);
+
     // Owner guard: no reply of any kind to anyone else.
     if (!isOwnerUpdate(update)) return;
 
@@ -285,7 +384,7 @@ async function pollLoop(bot) {
         const result = await bot.getUpdates({
             offset,
             timeout: POLL_TIMEOUT_SECONDS,
-            allowed_updates: ['message', 'callback_query']
+            allowed_updates: ['message', 'callback_query', 'my_chat_member']
         });
 
         if (!result.success) {

@@ -14,8 +14,12 @@ An owner-only admin panel in Telegram controls routing, translation and broadcas
    npm install
    ```
 
-2. Create `.env` in the project root (see [Environment](#environment)). At minimum, set
-   `GEMINI_API_KEY` and `GEMINI_API_MODEL_1`.
+2. Create `.env` from the template (see [Environment](#environment)). At minimum, set
+   `GEMINI_API_KEY` and `GEMINI_API_MODEL_1`:
+
+   ```bash
+   cp .env.example .env
+   ```
 
 3. Create the broadcast config from the template, then fill in bot tokens and chat ids and set the
    groups you want to `"enabled": true`:
@@ -53,6 +57,12 @@ A cycle that is still running when the next one is due makes the next one skip.
 | 00:00 – 07:59 | Backfill: translate archived HTML into `blogContent_TC/`, newest first, up to the daily quota (only when `ENABLE_TRANSLATION=true`) |
 | 00:00 UTC (09:00 JST) | The daily backfill quota resets |
 
+The windows are defined once in `services/schedule.js` and used by both the scheduler and the admin
+panel. **⏱ Schedule** in the panel shows each window, whether it is active now and when it next opens
+or closes, the next cycle time, the last crawl per group (new posts, duration), the last backfill run
+(translated, failed, why it stopped), the quota reset, and cycles skipped because the previous one
+was still running. Run history is kept in memory, so it starts empty after a restart.
+
 ## Pipeline
 
 ```
@@ -85,12 +95,14 @@ services/
   broadcaster.js             translate → format → send, delivery records, queue retries
   broadcast-queue.js         posts waiting to be broadcast
   backfill.js                quota-limited archive translation, blog index, statistics
-  admin-state.js             admin panel state: flags, quota, member overrides
+  admin-state.js             admin panel state: flags, quota, member overrides, joined chats
+  schedule.js                crawl / backfill windows (JST) and last-run activity
   scheduler.js               00:00 UTC quota reset
   admin/
     auth.js                  owner-only guard and rate limiter
+    chat-directory.js        every chat the bot broadcasts to, with live names
     views.js                 admin panel screens and inline keyboards
-    bot.js                   long polling, button handling, chat-id input
+    bot.js                   long polling, button handling, chat-id input, joined chats
 utils/                       HTTP, file system, date parsing helpers
 blogContent/                 raw article HTML per group
 blogContent_TC/              translated article HTML (+ <id>.json with the translated title),
@@ -134,6 +146,8 @@ A Telegram bot that only answers you. Send `/admin` to it in a private chat to o
 2. Find your numeric Telegram user id (for example by messaging [@userinfobot](https://t.me/userinfobot))
    and put it in `OWNER_USER_ID`.
 3. Restart, open a private chat with the bot, and send `/admin`.
+4. Optional: add the admin bot to the channels and groups you want to post to (as an admin with
+   **Post messages** for channels). Each one then appears under **📢 Chats**, ready to pick.
 
 The panel uses long polling, so no webhook or open port is needed. If the bot has a webhook set,
 Telegram refuses polling and the log says so; remove the webhook first.
@@ -152,13 +166,18 @@ Telegram refuses polling and the log says so; remove the webhook first.
 ```
 🛠 Admin Panel
 ├─ 📊 Status            translated / pending counts, per group and per member, quota, queue
+├─ ⏱ Schedule          crawl / Bokuao / backfill windows, next cycle, last runs, quota reset
 ├─ 👥 Members           pick a group → member list → member
 │   ├─ 🚫 Block translation for this group   (button under the member list)
 │   ├─ 🚫 Translation blocked / allowed       (per member)
 │   ├─ 🌐 Auto-translate on/off
 │   ├─ 📦 Archive / backup on/off
-│   ├─ 📡 Set target chats      (reply with ids, "-" to clear, /cancel to abort)
-│   └─ 🧹 Clear targets         (back to config.json routing)
+│   └─ 📡 Choose target chats   tap known chats on/off
+│       ├─ ⌨️ Type chat ids     (reply with ids, "-" to clear, /cancel to abort)
+│       └─ 🧹 Clear             (back to config.json routing)
+├─ 📢 Chats             every chat the bot broadcasts to → chat details
+│   ├─ 🔄 Re-check      ask Telegram again (names are cached 10 minutes)
+│   └─ 🗑 Forget        for a chat the bot has left that nothing routes to
 ├─ 📰 Recent blogs      group → members (latest post first) → member's posts → pick a chat → send
 ├─ 🧮 Quota             change the daily limit (±1 / ±10), reset today's usage
 ├─ ⏸ Pause / ▶️ Resume translation
@@ -176,9 +195,28 @@ Telegram refuses polling and the log says so; remove the webhook first.
 | **Archive / backup** (member) | New posts are not saved to `blogContent/` and are skipped by the backfill. They are still recorded in `BlogStatus.JSON` and still broadcast. |
 | **Target chats** (member) | Set: they replace the member's `config.json` route. Group and category routes still apply. They work even when the group is disabled in `config.json`. |
 
-Target chats are numeric ids (`-1001234567890`) or public usernames (`@my_channel`). They are posted with
-the member's bot from `config.json`, falling back to the group bot and then to the admin bot. That bot
-must be an admin of the chat.
+Pick target chats from the list, or type numeric ids (`-1001234567890`) or public usernames
+(`@my_channel`). Each chat is posted with the bot that can reach it: the admin bot for a chat it was
+added to, else the bot `config.json` already uses for that chat, else the member's bot, the group bot,
+and finally the admin bot. That bot must be an admin of the chat.
+
+### Chats
+
+Telegram has no way for a bot to list the chats it is in, so **📢 Chats** builds the list from:
+
+- every chat id in `config.json` (group-wide, member and category routes);
+- targets set from the admin panel;
+- chats the admin bot was **added to**: Telegram sends a `my_chat_member` update when the bot is added,
+  promoted or removed, and the bot records it.
+
+Each chat shows its live name and type (📢 channel · 👥 group · 👤 private), looked up with `getChat`
+through the bot that posts there, so ❌ means that bot really cannot reach it. The details show the chat
+id, which bot posts there, every route that uses it, how many posts it has received and when the last
+one arrived, and for joined chats, who added the bot.
+
+When the admin bot is added to or removed from a chat, you get a short notice in your DM (at most a few
+per minute). Nothing is ever sent into that chat or to the person who added the bot, and a chat someone
+else added only receives posts after you route a member to it.
 
 ### Manual send
 
@@ -344,8 +382,12 @@ that missed the post receive it. A post that still fails after 5 retries is drop
     // only members whose settings differ from the defaults (all on, no targets)
     "Hinatazaka46/金村美玖": { "autoTranslate": false, "archive": true, "translationBlocked": false, "chatIds": ["-1001234567890"] }
   },
-  "blockedGroups": ["Bokuao"],                        // groups whose translation is blocked
-  "backfillFailures": { "Hinatazaka46/104023": 1 }   // posts are skipped after 3
+  "blockedGroups": ["Bokuao"],                       // groups whose translation is blocked
+  "backfillFailures": { "Hinatazaka46/104023": 1 },  // posts are skipped after 3
+  "knownChats": {                                    // chats the admin bot was added to
+    "-1001234567890": { "id": "-1001234567890", "title": "My channel", "type": "channel",
+                        "status": "administrator", "canPost": true, "addedBy": 111 }
+  }
 }
 ```
 

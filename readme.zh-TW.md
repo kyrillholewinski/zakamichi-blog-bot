@@ -14,8 +14,12 @@
    npm install
    ```
 
-2. 在專案根目錄建立 `.env`（請參考[環境變數](#環境變數)）。至少需要設定
-   `GEMINI_API_KEY` 和 `GEMINI_API_MODEL_1`。
+2. 從範本建立 `.env`（請參考[環境變數](#環境變數)）。至少需要設定
+   `GEMINI_API_KEY` 和 `GEMINI_API_MODEL_1`：
+
+   ```bash
+   cp .env.example .env
+   ```
 
 3. 從範本建立推送設定檔，填入 Bot Token 與頻道 ID，並把要推送的團體設為 `"enabled": true`：
 
@@ -52,6 +56,11 @@ Bot 必須是每個目標頻道的管理員，並具有發送訊息的權限。
 | 00:00 – 07:59 | 補翻譯：把已存檔的 HTML 翻譯到 `blogContent_TC/`，由新到舊，直到用完每日額度（需設定 `ENABLE_TRANSLATION=true`） |
 | UTC 00:00（JST 09:00） | 重設每日補翻譯額度 |
 
+各時段只在 `services/schedule.js` 定義一次，排程與管理面板共用同一份設定。管理面板的 **⏱ 執行時段** 會顯示：
+各時段目前是否進行中、下一次開始或結束的時間、下一輪執行時間、各團體最近一次爬取（新文章數、耗時）、
+最近一次補翻譯（翻譯數、失敗數、停止原因）、額度重設時間，以及因上一輪尚未結束而略過的次數。
+執行紀錄保存在記憶體中，重新啟動後會清空。
+
 ## 處理流程
 
 ```
@@ -84,12 +93,14 @@ services/
   broadcaster.js             翻譯 → 排版 → 發送，記錄推送結果並重試佇列
   broadcast-queue.js         等待推送的文章
   backfill.js                依額度補翻譯存檔、文章索引、統計
-  admin-state.js             管理面板狀態：開關、額度、成員設定
+  admin-state.js             管理面板狀態：開關、額度、成員設定、已加入的聊天室
+  schedule.js                爬取／補翻譯時段（JST）與最近執行紀錄
   scheduler.js               UTC 00:00 重設額度
   admin/
     auth.js                  僅限擁有者的檢查與頻率限制
+    chat-directory.js        Bot 推送的所有聊天室與其即時名稱
     views.js                 管理面板畫面與內嵌按鈕
-    bot.js                   長輪詢、按鈕處理、頻道 ID 輸入
+    bot.js                   長輪詢、按鈕處理、頻道 ID 輸入、記錄加入的聊天室
 utils/                       HTTP、檔案系統、日期解析等工具
 blogContent/                 各團體的原始文章 HTML
 blogContent_TC/              翻譯版文章 HTML（另有 <id>.json 存放翻譯後標題），
@@ -129,6 +140,8 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 1. 透過 [@BotFather](https://t.me/BotFather) 建立 Bot（也可沿用推送用的 Bot），把 Token 填入 `ADMIN_BOT_TOKEN`。
 2. 取得你的 Telegram 數字使用者 ID（例如私訊 [@userinfobot](https://t.me/userinfobot)），填入 `OWNER_USER_ID`。
 3. 重新啟動程式，與 Bot 開啟私訊並傳送 `/admin`。
+4. 選用：把管理面板的 Bot 加入要推送的頻道與群組（頻道需設為具有「發布訊息」權限的管理員），
+   之後就會出現在 **📢 聊天室** 中，可以直接點選。
 
 管理面板使用長輪詢，不需要 Webhook 或對外開放連接埠。如果該 Bot 已設定 Webhook，Telegram 會拒絕輪詢，
 記錄檔中會顯示原因；請先移除 Webhook。
@@ -145,13 +158,18 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 ```
 🛠 管理面板
 ├─ 📊 狀態              已翻譯／待翻譯數量（依團體與成員）、額度、佇列
+├─ ⏱ 執行時段          爬取／Bokuao／補翻譯時段、下一輪、最近執行、額度重設
 ├─ 👥 成員              選擇團體 → 成員清單 → 成員
 │   ├─ 🚫 封鎖整個團體的翻譯      （成員清單下方的按鈕）
 │   ├─ 🚫 翻譯 封鎖／允許          （個別成員）
 │   ├─ 🌐 自動翻譯 開／關
 │   ├─ 📦 存檔／備份 開／關
-│   ├─ 📡 設定推送目標          （回覆頻道 ID；「-」清除；/cancel 取消）
-│   └─ 🧹 清除推送目標          （改回使用 config.json 的設定）
+│   └─ 📡 選擇推送目標          點選已知聊天室開／關
+│       ├─ ⌨️ 輸入頻道 ID       （回覆頻道 ID；「-」清除；/cancel 取消）
+│       └─ 🧹 清除              （改回使用 config.json 的設定）
+├─ 📢 聊天室            Bot 推送的所有聊天室 → 聊天室詳細資料
+│   ├─ 🔄 重新檢查      重新向 Telegram 查詢（名稱快取 10 分鐘）
+│   └─ 🗑 移除紀錄      適用於 Bot 已離開、且沒有任何推送規則的聊天室
 ├─ 📰 最新文章          團體 → 成員（依最新文章排序）→ 該成員的文章 → 選擇聊天室 → 發送
 ├─ 🧮 額度              調整每日上限（±1／±10）、重設今日用量
 ├─ ⏸ 暫停／▶️ 繼續 翻譯
@@ -169,8 +187,24 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 | **存檔／備份**（成員） | 新文章不會存到 `blogContent/`，也不列入補翻譯；但仍會記錄在 `BlogStatus.JSON` 並照常推送。 |
 | **推送目標**（成員） | 設定後會取代該成員在 `config.json` 中的推送設定；團體與分類的推送仍然有效。即使團體在 `config.json` 中為停用狀態也會生效。 |
 
-推送目標可以是數字 ID（`-1001234567890`）或公開帳號（`@my_channel`）。發送時使用 `config.json` 中該成員的 Bot，
-若沒有則使用團體的 Bot，再沒有則使用管理面板的 Bot。該 Bot 必須是目標聊天室的管理員。
+推送目標可從清單點選，或輸入數字 ID（`-1001234567890`）或公開帳號（`@my_channel`）。每個聊天室都由能送達的 Bot 發送：
+Bot 曾被加入的聊天室使用管理面板的 Bot；否則使用 `config.json` 中已用於該聊天室的 Bot；再否則依序使用成員的 Bot、
+團體的 Bot，最後是管理面板的 Bot。該 Bot 必須是目標聊天室的管理員。
+
+### 聊天室
+
+Telegram 沒有讓 Bot 列出自己所在聊天室的功能，因此 **📢 聊天室** 的清單來自：
+
+- `config.json` 中的所有頻道 ID（團體共用、成員與分類規則）；
+- 在管理面板中設定的推送目標；
+- 管理面板的 Bot **被加入**的聊天室：Bot 被加入、升為管理員或被移除時，Telegram 會送出 `my_chat_member` 更新，Bot 會記錄下來。
+
+每個聊天室都會顯示即時名稱與類型（📢 頻道 · 👥 群組 · 👤 私人），透過實際負責發送的 Bot 以 `getChat` 查詢，
+因此 ❌ 代表該 Bot 確實無法送達。詳細資料包含聊天室 ID、由哪個 Bot 發送、使用它的所有推送規則、已收到的文章數與最後一次送達時間；
+若是 Bot 被加入的聊天室，也會顯示是誰加入的。
+
+管理面板的 Bot 被加入或移出聊天室時，你會在私訊中收到簡短通知（每分鐘最多幾則）。Bot 不會在該聊天室發送任何訊息，
+也不會回覆加入它的人；由他人加入的聊天室，只有在你把成員的推送目標設為它之後才會收到文章。
 
 ### 手動推送
 
@@ -318,8 +352,12 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
     // 只記錄與預設值（全部開啟、無推送目標）不同的成員
     "Hinatazaka46/金村美玖": { "autoTranslate": false, "archive": true, "translationBlocked": false, "chatIds": ["-1001234567890"] }
   },
-  "blockedGroups": ["Bokuao"],                        // 封鎖翻譯的團體
-  "backfillFailures": { "Hinatazaka46/104023": 1 }   // 失敗 3 次後略過
+  "blockedGroups": ["Bokuao"],                       // 封鎖翻譯的團體
+  "backfillFailures": { "Hinatazaka46/104023": 1 },  // 失敗 3 次後略過
+  "knownChats": {                                    // 管理面板的 Bot 被加入的聊天室
+    "-1001234567890": { "id": "-1001234567890", "title": "My channel", "type": "channel",
+                        "status": "administrator", "canPost": true, "addedBy": 111 }
+  }
 }
 ```
 

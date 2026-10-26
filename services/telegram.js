@@ -44,6 +44,20 @@ export class TelegramApiClient {
         });
     }
 
+    async getMe() {
+        return await httpRequest({ method: 'POST', url: `${this.baseUrl}/getMe` });
+    }
+
+    /** Title, type and username of a chat — fails if this bot is not in it. */
+    async getChat(chatId) {
+        return await httpRequest({
+            method: 'POST',
+            url: `${this.baseUrl}/getChat`,
+            data: { chat_id: chatId },
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+
     async answerCallbackQuery(callbackQueryId, options = {}) {
         return await httpRequest({
             method: 'POST',

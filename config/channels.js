@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { CONFIG_FILE_NAME, ADMIN_BOT_TOKEN } from './constants.js';
-import { getMemberSettings, listMemberTargetOverrides } from '../services/admin-state.js';
+import { CONFIG_FILE_NAME, ADMIN_BOT_TOKEN, GROUPS } from './constants.js';
+import { getMemberSettings, listMemberTargetOverrides, getKnownChat, listKnownChats } from '../services/admin-state.js';
 
 /**
  * Broadcast configuration loader.
@@ -164,20 +164,45 @@ export function isGroupBroadcastEnabled(groupName) {
 }
 
 /**
- * Route for targets the owner set from the admin panel. Settings come from the
- * member's config entry when there is one, else the group's, else the defaults;
- * the bot falls back to the admin bot so a member with no config entry still works.
+ * The bot that should post to a chat picked in the admin panel: the admin bot
+ * for a chat it has been added to, else whichever bot config.json already uses
+ * for that chat, else `fallback`. A bot can only post where it is a member, so
+ * the bot known to reach the chat beats the member's or group's default bot.
  */
-function adminRoute(config, groupName, memberName, chatIds) {
+function tokenForChat(config, chatId, fallback) {
+    if (ADMIN_BOT_TOKEN && getKnownChat(chatId)?.active) return ADMIN_BOT_TOKEN;
+    for (const group of config.groups.values()) {
+        for (const route of [group, ...group.members, ...group.categories]) {
+            if (route.chatIds.includes(chatId)) return route.botToken || group.botToken || fallback;
+        }
+    }
+    return fallback;
+}
+
+/**
+ * Routes for targets the owner set from the admin panel, one per bot that will
+ * post them. Settings come from the member's config entry when there is one,
+ * else the group's, else the defaults.
+ */
+function adminRoutes(config, groupName, memberName, chatIds) {
     const group = config.groups.get(groupName);
     const member = group?.members.find(m => m.name === memberName);
-    return {
+    const fallback = member?.botToken || group?.botToken || ADMIN_BOT_TOKEN;
+
+    const byToken = new Map();
+    for (const chatId of chatIds) {
+        const token = tokenForChat(config, chatId, fallback);
+        if (!byToken.has(token)) byToken.set(token, []);
+        byToken.get(token).push(chatId);
+    }
+
+    return [...byToken].map(([botToken, ids]) => ({
         label: `${groupName}/${memberName} (admin)`,
-        botToken: member?.botToken || group?.botToken || ADMIN_BOT_TOKEN,
-        chatIds,
+        botToken,
+        chatIds: ids,
         translation: member?.translation || group?.translation || config.defaults.translation,
         message: member?.message || group?.message || config.defaults.message
-    };
+    }));
 }
 
 /** Expands routes into de-duplicated destinations (first route wins per chat). */
@@ -254,7 +279,7 @@ export function resolveDestinations(groupName, blog) {
     // apply even when the group is disabled there: setting them is the opt-in.
     const adminChatIds = getMemberSettings(groupName, memberName).chatIds;
     if (adminChatIds?.length) {
-        routes.push(adminRoute(config, groupName, memberName, adminChatIds.map(String)));
+        routes.push(...adminRoutes(config, groupName, memberName, adminChatIds.map(String)));
     }
 
     if (!group || !group.enabled) return routesToDestinations(routes, group?.glossary || {});
@@ -336,14 +361,63 @@ export function listKnownTargets(forGroupName) {
         });
     }
 
-    const groupNames = new Set([...config.groups.keys(), forGroupName]);
+    const groupNames = new Set([...config.groups.keys(), ...Object.values(GROUPS), forGroupName]);
     for (const groupName of groupNames) {
         for (const { memberName, chatIds } of listMemberTargetOverrides(groupName)) {
-            routes.push(adminRoute(config, groupName, memberName, chatIds));
+            routes.push(...adminRoutes(config, groupName, memberName, chatIds));
+        }
+    }
+
+    // Chats the admin bot was added to, even if nothing routes there yet.
+    if (ADMIN_BOT_TOKEN) {
+        const fallback = getFallbackSettings(forGroupName);
+        for (const chat of listKnownChats().filter(c => c.active)) {
+            routes.push({ label: chat.title, botToken: ADMIN_BOT_TOKEN, chatIds: [chat.id], ...fallback });
         }
     }
 
     return routesToDestinations(routes, config.groups.get(forGroupName)?.glossary || {});
+}
+
+/**
+ * Every place a chat id appears in the routing, one entry per use, so the chat
+ * directory can show which routes feed each chat and with which bot.
+ *
+ * @returns {Array<{chatId: string, botToken: string, label: string, enabled: boolean}>}
+ */
+export function listRouteUsages() {
+    const config = loadChannelConfig();
+    const usages = [];
+
+    for (const [groupName, group] of config.groups) {
+        const groupOn = config.enabled && group.enabled;
+        for (const chatId of group.chatIds) {
+            usages.push({ chatId, botToken: group.botToken, label: `${groupName} (group-wide)`, enabled: groupOn });
+        }
+        for (const member of group.members) {
+            for (const chatId of member.chatIds) {
+                usages.push({ chatId, botToken: member.botToken || group.botToken, label: `${groupName}/${member.name}`, enabled: groupOn && member.enabled });
+            }
+        }
+        for (const category of group.categories) {
+            for (const chatId of category.chatIds) {
+                usages.push({ chatId, botToken: category.botToken || group.botToken, label: `${groupName}/${category.name} (category)`, enabled: groupOn && category.enabled });
+            }
+        }
+    }
+
+    const groupNames = new Set([...config.groups.keys(), ...Object.values(GROUPS)]);
+    for (const groupName of groupNames) {
+        for (const { memberName, chatIds } of listMemberTargetOverrides(groupName)) {
+            for (const route of adminRoutes(config, groupName, memberName, chatIds)) {
+                for (const chatId of route.chatIds) {
+                    usages.push({ chatId, botToken: route.botToken, label: `${groupName}/${memberName} (admin panel)`, enabled: config.enabled });
+                }
+            }
+        }
+    }
+
+    return usages;
 }
 
 /** Translation/message settings to use for a chat that has no route of its own. */

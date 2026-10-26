@@ -1,10 +1,12 @@
 import crypto from 'crypto';
-import { ADMIN_BOT_TOKEN, OWNER_USER_ID } from '../../config/constants.js';
+import { ADMIN_BOT_TOKEN, OWNER_USER_ID, ENABLE_TRANSLATION, ENABLE_BROADCAST, POLLING_INTERVAL_MS } from '../../config/constants.js';
 import { resolveDestinations, listKnownTargets, getFallbackSettings } from '../../config/channels.js';
 import { escapeHtml, formatJstTimestamp } from '../message-builder.js';
 import { msUntilNextUtcMidnight } from '../scheduler.js';
 import { getQueueSize } from '../broadcast-queue.js';
 import { GROUP_LIST, getBlogIndex, getBackfillQueue, getTranslationStats } from '../backfill.js';
+import { WINDOWS, isWithin, nextBoundary, formatWindow, nextCycleAt, getActivity } from '../schedule.js';
+import { getChatDirectory, chatKindIcon, botName } from './chat-directory.js';
 import {
     isTranslationPaused,
     isBroadcastPaused,
@@ -23,13 +25,18 @@ import {
  *
  *   menu                     main menu
  *   st                       status dashboard
+ *   sc                       crawl / backfill schedule and last runs
+ *   ch:<page>                chat directory
+ *   cv|cr|cf:<chat>          chat detail, re-check it, forget it
  *   fl:t | fl:b              toggle translation / broadcasting pause
  *   q | q:d:<delta> | q:r    quota view, change daily limit, reset today's usage
  *   mg                       pick a group's members
  *   ml:<g>:<page>            member list
  *   m:<g>:<hash>             member detail
- *   mt|ma|mc|mx|mb:<g>:<hash> toggle translate, toggle archive, set targets, clear targets,
+ *   mt|ma|mc|mx|mb:<g>:<hash> toggle translate, toggle archive, type targets, clear targets,
  *                            toggle the member's translation block
+ *   mp:<g>:<hash>:<page>     pick target chats from the directory
+ *   mpt:<g>:<hash>:<chat>:<page>  toggle one target chat
  *   gb:<g>                   toggle the whole group's translation block
  *   bl                       recent blogs: pick a group
  *   rg:<g>:<page>            recent blogs: a group's members, most recently active first
@@ -98,7 +105,8 @@ export function mainView() {
         text,
         reply_markup: {
             inline_keyboard: [
-                [button('📊 Status', 'st'), button('👥 Members', 'mg')],
+                [button('📊 Status', 'st'), button('⏱ Schedule', 'sc')],
+                [button('👥 Members', 'mg'), button('📢 Chats', 'ch:0')],
                 [button('📰 Recent blogs', 'bl'), button('🧮 Quota', 'q')],
                 [button(translationPaused ? '▶️ Resume translation' : '⏸ Pause translation', 'fl:t')],
                 [button(broadcastPaused ? '▶️ Resume broadcasting' : '⏸ Pause broadcasting', 'fl:b')],
@@ -275,7 +283,7 @@ export async function memberView(groupIndex, hash) {
         [button(`🚫 Translation: ${settings.translationBlocked ? 'Blocked → Allow' : 'Allowed → Block'}`, `mb:${groupIndex}:${hash}`)],
         [button(`🌐 Auto-translate: ${settings.autoTranslate ? 'On → Off' : 'Off → On'}`, `mt:${groupIndex}:${hash}`)],
         [button(`📦 Archive: ${settings.archive ? 'On → Off' : 'Off → On'}`, `ma:${groupIndex}:${hash}`)],
-        [button('📡 Set target chats', `mc:${groupIndex}:${hash}`)]
+        [button('📡 Choose target chats', `mp:${groupIndex}:${hash}:0`)]
     ];
     if (settings.chatIds?.length) rows.push([button('🧹 Clear targets (use config.json)', `mx:${groupIndex}:${hash}`)]);
     rows.push(backRow(`ml:${groupIndex}:0`, '◀ Members'));
@@ -430,6 +438,198 @@ export async function blogView(groupIndex, blogId, memberHash, page = 0) {
         }
     }
     rows.push(back);
+
+    return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
+}
+
+// --- Schedule ---
+
+/** "14:05" for today (JST), "Sat 14:05" for another day. */
+function formatWhen(date) {
+    if (!date) return 'never';
+    const d = new Date(date);
+    const time = d.toLocaleTimeString('en-GB', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false });
+    const day = (x) => x.toLocaleDateString('en-CA', { timeZone: 'Asia/Tokyo' });
+    if (day(d) === day(new Date())) return time;
+    return `${d.toLocaleDateString('en-GB', { timeZone: 'Asia/Tokyo', weekday: 'short' })} ${time}`;
+}
+
+function formatSpan(start, end) {
+    const seconds = Math.max(0, Math.round((new Date(end) - new Date(start)) / 1000));
+    return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function windowState(window, now) {
+    return isWithin(window, now)
+        ? `🟢 active · ends ${formatWhen(nextBoundary(window, now))}`
+        : `⏸ next ${formatWhen(nextBoundary(window, now))}`;
+}
+
+const STOP_REASONS = { done: 'backlog empty', quota: 'quota used up', paused: 'translation paused', window: 'crawl window opened' };
+
+export function scheduleView(now = new Date()) {
+    const activity = getActivity();
+    const { cycle } = activity;
+    const quota = getQuota();
+    const intervalMin = Math.round(POLLING_INTERVAL_MS / 60000);
+
+    const lines = [`⏱ <b>Schedule</b> · now ${formatWhen(now)} JST`, ''];
+
+    let cycleLine = `🔁 Cycle every ${intervalMin} min · next ~${formatWhen(nextCycleAt(now))}`;
+    if (cycle?.running) cycleLine += ` · ${cycle.mode} running since ${formatWhen(cycle.startedAt)}`;
+    else if (cycle) cycleLine += ` · last ${cycle.mode} ${formatWhen(cycle.startedAt)} (${formatSpan(cycle.startedAt, cycle.finishedAt)})${cycle.error ? ' ❌' : ''}`;
+    lines.push(cycleLine);
+    if (activity.skipped.count) {
+        lines.push(`   ${activity.skipped.count} cycle(s) skipped because the previous one was still running, last ${formatWhen(activity.skipped.lastAt)}`);
+    }
+    if (cycle?.error) lines.push(`   ❌ ${escapeHtml(cycle.error)}`);
+
+    lines.push(
+        '',
+        `🕷 <b>Crawl</b> ${formatWindow(WINDOWS.crawl)} JST · ${windowState(WINDOWS.crawl, now)}`,
+        '   Hinatazaka46 · Sakurazaka46 · Nogizaka46, every cycle',
+        `   Bokuao ${formatWindow(WINDOWS.bokuao)} JST only · ${windowState(WINDOWS.bokuao, now)}`
+    );
+    for (const group of GROUP_LIST) {
+        const crawl = activity.crawls[group];
+        lines.push(crawl
+            ? `   • ${escapeHtml(group)} ${formatWhen(crawl.startedAt)} · ${crawl.newPosts} new · ${formatSpan(crawl.startedAt, crawl.finishedAt)}`
+            : `   • ${escapeHtml(group)} not crawled since start`);
+    }
+
+    const backfillBlocked = !ENABLE_TRANSLATION
+        ? '❌ off (ENABLE_TRANSLATION is not true)'
+        : isTranslationPaused() ? '⏸ translation paused' : null;
+    lines.push(
+        '',
+        `🗂 <b>Backfill</b> ${formatWindow(WINDOWS.backfill)} JST · ${backfillBlocked || windowState(WINDOWS.backfill, now)}`,
+        `   Quota ${quota.used} / ${quota.dailyLimit} · resets 09:00 JST (00:00 UTC), in ${formatDuration(msUntilNextUtcMidnight(now))}`
+    );
+    const backfill = activity.backfill;
+    lines.push(backfill
+        ? `   Last run ${formatWhen(backfill.startedAt)} → ${formatWhen(backfill.finishedAt)} · ${backfill.translated} translated, ${backfill.failed} failed · stopped: ${STOP_REASONS[backfill.stopReason] || backfill.stopReason}`
+        : '   Not run since start');
+
+    lines.push(
+        '',
+        `📬 <b>Broadcast queue</b> retried at the start of every cycle · ${getQueueSize()} waiting`,
+        `📡 Broadcasting: ${!ENABLE_BROADCAST ? '❌ off (ENABLE_BROADCAST=false)' : isBroadcastPaused() ? '⏸ paused' : '▶️ running'}`,
+        '',
+        '<i>Run history is kept in memory and resets when the bot restarts.</i>'
+    );
+
+    return { text: lines.join('\n'), reply_markup: { inline_keyboard: [[button('🔄 Refresh', 'sc')], backRow()] } };
+}
+
+// --- Chat directory ---
+
+const CHATS_PER_PAGE = 8;
+
+function chatStatusIcon(chat) {
+    if (!chat.reachable) return '❌';
+    return chat.routes.some(r => r.enabled) ? '🟢' : '⚪';
+}
+
+export async function findChat(hash, options) {
+    return (await getChatDirectory(options)).find(c => shortHash(c.chatId) === hash) || null;
+}
+
+export async function chatsView(page, { fresh = false } = {}) {
+    const chats = await getChatDirectory({ fresh });
+    const pageCount = Math.max(1, Math.ceil(chats.length / CHATS_PER_PAGE));
+    const current = clampPage(page, pageCount);
+    const slice = chats.slice(current * CHATS_PER_PAGE, (current + 1) * CHATS_PER_PAGE);
+
+    const rows = slice.map(c => [button(
+        `${chatStatusIcon(c)} ${chatKindIcon(c.type)} ${truncate(c.label, 26)} · ${c.routes.length} route${c.routes.length === 1 ? '' : 's'}`,
+        `cv:${shortHash(c.chatId)}`
+    )]);
+    if (pageCount > 1) rows.push(pageRow('ch', current, pageCount));
+    rows.push([button('🔄 Re-check all', 'ch:r')]);
+    rows.push(backRow());
+
+    const lines = [
+        `📢 <b>Chats</b> · ${chats.length} known`,
+        '',
+        '🟢 receiving posts · ⚪ known, nothing routed · ❌ bot cannot reach it',
+        '📢 channel · 👥 group · 👤 private · ❔ unknown',
+        '',
+        chats.length
+            ? 'Tap a chat for its routes and deliveries.'
+            : 'No chats yet. Add chat ids to config/config.json, set member targets, or add the admin bot to a channel as an admin.'
+    ];
+    if (ADMIN_BOT_TOKEN) {
+        const name = await botName(ADMIN_BOT_TOKEN);
+        if (name) lines.push(`Adding ${escapeHtml(name)} to a group or channel lists it here automatically.`);
+    }
+
+    return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
+}
+
+export async function chatView(hash, { fresh = false } = {}) {
+    const chat = await findChat(hash, { fresh });
+    if (!chat) return { text: 'Chat not found. It may no longer be routed or known.', reply_markup: { inline_keyboard: [backRow('ch:0', '◀ Chats')] } };
+
+    const lines = [`${chatKindIcon(chat.type)} <b>${escapeHtml(chat.label)}</b>${chat.username ? ` (@${escapeHtml(chat.username)})` : ''}`];
+    lines.push(`ID: <code>${escapeHtml(chat.chatId)}</code> · ${escapeHtml(chat.type)}`);
+
+    const names = await Promise.all(chat.botTokens.map(botName));
+    if (names.length) lines.push(`Posted by: ${names.map((n, i) => escapeHtml(n || `bot #${i + 1} (token rejected)`)).join(', ')}`);
+    lines.push(chat.reachable ? '✅ Reachable' : `❌ Not reachable: ${escapeHtml(chat.error || 'unknown error')}`);
+
+    if (chat.joined) {
+        const j = chat.joined;
+        const by = !j.addedBy ? 'unknown'
+            : String(j.addedBy) === OWNER_USER_ID ? 'you'
+            : `${escapeHtml(j.addedByName || 'user')} (<code>${j.addedBy}</code>)`;
+        lines.push(`Admin bot: ${escapeHtml(j.status)}${j.type === 'channel' ? ` · can post: ${j.canPost ? 'yes' : 'no'}` : ''} · changed by ${by} · ${formatJstTimestamp(j.updatedAt)} JST`);
+        if (j.addedBy && String(j.addedBy) !== OWNER_USER_ID) {
+            lines.push('⚠️ Someone else added the bot here. Nothing is sent unless you route a member to it.');
+        }
+    }
+
+    lines.push(`Delivered: ${fmt(chat.deliveries)} post(s)${chat.lastDeliveredAt ? ` · last ${formatJstTimestamp(chat.lastDeliveredAt)} JST` : ''}`);
+    lines.push('', '<b>Routes</b>');
+    lines.push(...(chat.routes.length
+        ? chat.routes.map(r => `• ${escapeHtml(r.label)}${r.enabled ? '' : ' <i>(disabled)</i>'}`)
+        : ['• none. Pick it under 👥 Members → 📡 Choose target chats.']));
+
+    const rows = [[button('🔄 Re-check', `cr:${hash}`)]];
+    if (chat.joined && !chat.joined.active && !chat.routes.length) rows.push([button('🗑 Forget this chat', `cf:${hash}`)]);
+    rows.push(backRow('ch:0', '◀ Chats'));
+    return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
+}
+
+// --- Member target picker ---
+
+export async function memberTargetsView(groupIndex, hash, page) {
+    const groupName = groupAt(groupIndex);
+    const member = groupName ? await findMember(groupName, hash) : null;
+    if (!member) return { text: 'Member not found.', reply_markup: { inline_keyboard: [backRow('mg')] } };
+
+    const selected = new Set(getMemberSettings(groupName, member.name).chatIds || []);
+    // Chats the bot cannot reach are left out unless already selected, so they can still be switched off.
+    const chats = (await getChatDirectory()).filter(c => c.reachable || selected.has(c.chatId));
+    const pageCount = Math.max(1, Math.ceil(chats.length / CHATS_PER_PAGE));
+    const current = clampPage(page, pageCount);
+    const slice = chats.slice(current * CHATS_PER_PAGE, (current + 1) * CHATS_PER_PAGE);
+
+    const rows = slice.map(c => [button(
+        `${selected.has(c.chatId) ? '✅' : '⬜'} ${chatKindIcon(c.type)} ${truncate(c.label, 30)}`,
+        `mpt:${groupIndex}:${hash}:${shortHash(c.chatId)}:${current}`
+    )]);
+    if (pageCount > 1) rows.push(pageRow(`mp:${groupIndex}:${hash}`, current, pageCount));
+    rows.push([button('⌨️ Type chat ids', `mc:${groupIndex}:${hash}`)]);
+    if (selected.size) rows.push([button('🧹 Clear (use config.json)', `mx:${groupIndex}:${hash}`)]);
+    rows.push(backRow(`m:${groupIndex}:${hash}`, `◀ ${truncate(member.name, 20)}`));
+
+    const lines = [
+        `📡 <b>Targets for ${escapeHtml(member.name)}</b> · ${escapeHtml(groupName)}`,
+        '',
+        `Selected: ${selected.size || 'none, so config.json decides'}`,
+        "Tap a chat to switch it on or off. Selected chats replace the member's config.json route; group and category routes still apply."
+    ];
+    if (!chats.length) lines.push('', 'No reachable chats are known yet. Add the admin bot to a channel, or type an id.');
 
     return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
 }
