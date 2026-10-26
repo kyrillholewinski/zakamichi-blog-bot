@@ -16,7 +16,11 @@ import { PATHS, DAILY_TRANSLATION_QUOTA } from '../config/constants.js';
  *   "members": {
  *     "Hinatazaka46/金村美玖": { "autoTranslate": true, "archive": true, "chatIds": ["-100123"] }
  *   },
- *   "backfillFailures": { "Hinatazaka46/104023": 1 }
+ *   "backfillFailures": { "Hinatazaka46/104023": 1 },
+ *   "knownChats": {
+ *     "-1001234567890": { "id": "-1001234567890", "title": "My channel", "type": "channel",
+ *                         "status": "administrator", "canPost": true, "addedBy": 111, ... }
+ *   }
  * }
  *
  * Reads are synchronous and served from memory; every change is written straight
@@ -37,7 +41,8 @@ function defaultState() {
         flags: { translationPaused: false, broadcastPaused: false },
         quota: { dailyLimit: DAILY_TRANSLATION_QUOTA, date: utcDateString(), used: 0 },
         members: {},
-        backfillFailures: {}
+        backfillFailures: {},
+        knownChats: {}
     };
 }
 
@@ -50,7 +55,8 @@ function loadState() {
             flags: { ...base.flags, ...raw.flags },
             quota: { ...base.quota, ...raw.quota },
             members: raw.members && typeof raw.members === 'object' ? raw.members : {},
-            backfillFailures: raw.backfillFailures && typeof raw.backfillFailures === 'object' ? raw.backfillFailures : {}
+            backfillFailures: raw.backfillFailures && typeof raw.backfillFailures === 'object' ? raw.backfillFailures : {},
+            knownChats: raw.knownChats && typeof raw.knownChats === 'object' ? raw.knownChats : {}
         };
     } catch (err) {
         if (err.code !== 'ENOENT') console.error(`[admin-state] Could not read ${STATE_PATH}, starting fresh: ${err.message}`);
@@ -149,7 +155,8 @@ export function updateMemberSettings(groupName, memberName, patch) {
     const key = memberKey(groupName, memberName);
     const next = { ...state.members[key], ...patch };
 
-    if (next.chatIds === null || next.chatIds === undefined) delete next.chatIds;
+    // No targets left means "let config.json decide", same as clearing them.
+    if (!Array.isArray(next.chatIds) || !next.chatIds.length) delete next.chatIds;
     if (next.autoTranslate === MEMBER_DEFAULTS.autoTranslate) delete next.autoTranslate;
     if (next.archive === MEMBER_DEFAULTS.archive) delete next.archive;
 
@@ -185,4 +192,56 @@ export function clearBackfillFailure(groupName, blogId) {
     if (!(key in state.backfillFailures)) return;
     delete state.backfillFailures[key];
     persist();
+}
+
+// --- Chats the admin bot was added to ---
+//
+// Telegram has no "list my chats" call; a bot only learns about a group or
+// channel from the my_chat_member update sent when it is added, promoted or
+// removed. Those are recorded here so the owner can route members to a chat
+// by tapping it instead of looking up its id.
+
+const ACTIVE_STATUSES = new Set(['creator', 'administrator', 'member']);
+
+function chatTitle(chat) {
+    if (chat.title) return chat.title;
+    if (chat.username) return `@${chat.username}`;
+    return [chat.first_name, chat.last_name].filter(Boolean).join(' ') || String(chat.id);
+}
+
+function withActive(entry) {
+    return entry ? { ...entry, active: ACTIVE_STATUSES.has(entry.status) && entry.canPost !== false } : null;
+}
+
+/** Records the bot's membership in a chat; returns the entry as it was before. */
+export function recordKnownChat(chat, patch = {}) {
+    const key = String(chat.id);
+    const previous = state.knownChats[key] ? { ...state.knownChats[key] } : null;
+    state.knownChats[key] = {
+        ...previous,
+        id: key,
+        title: chatTitle(chat),
+        username: chat.username || null,
+        type: chat.type,
+        ...patch,
+        updatedAt: new Date().toISOString()
+    };
+    persist();
+    return withActive(previous);
+}
+
+export function getKnownChat(chatId) {
+    return withActive(state.knownChats[String(chatId)]);
+}
+
+export function listKnownChats() {
+    return Object.values(state.knownChats).map(withActive);
+}
+
+export function forgetKnownChat(chatId) {
+    const key = String(chatId);
+    if (!(key in state.knownChats)) return false;
+    delete state.knownChats[key];
+    persist();
+    return true;
 }
