@@ -8,7 +8,8 @@ import { isOwnerUpdate, createRateLimiter } from './auth.js';
 import {
     mainView, statusView, quotaView, scheduleView,
     memberGroupsView, memberListView, memberView, memberTargetsView, findMember,
-    chatsView, chatView, findChat,
+    chatsView, chatView, findChat, chatMemberGroupsView, chatMembersView, listGroupMembers,
+    MODE_CODES, MODE_NAMES,
     recentGroupsView, recentMembersView, recentMemberBlogsView,
     blogView, blogFromEntry, getBlogTargets, groupAt
 } from './views.js';
@@ -19,7 +20,8 @@ import {
     getQuota, setDailyLimit, resetQuotaUsage,
     getMemberSettings, updateMemberSettings,
     isGroupTranslationBlocked, setGroupTranslationBlocked,
-    recordKnownChat, getKnownChat, forgetKnownChat
+    recordKnownChat, getKnownChat, forgetKnownChat,
+    setChatMode, setMemberTargetsChat
 } from '../admin-state.js';
 
 /**
@@ -124,6 +126,47 @@ async function handleCallback(bot, query) {
             forgetKnownChat(chat.chatId);
             await toast(bot, query.id, 'Forgotten');
             return show(bot, await chatsView(0), target);
+        }
+
+        case 'cmo': {
+            const chat = await findChat(args[0]);
+            if (!chat || !(args[1] in MODE_CODES)) return toast(bot, query.id, 'That chat is no longer listed.', true);
+            const mode = MODE_CODES[args[1]];
+            setChatMode(chat.chatId, mode);
+            await toast(bot, query.id, mode ? `${chat.label}: ${MODE_NAMES[mode]}` : `${chat.label}: default`);
+            return show(bot, await chatView(args[0]), target);
+        }
+
+        case 'cm':
+            await toast(bot, query.id);
+            return show(bot, await chatMemberGroupsView(args[0]), target);
+
+        case 'cmg':
+            await toast(bot, query.id);
+            return show(bot, await chatMembersView(args[0], args[1], args[2]), target);
+
+        case 'cmt': {
+            const chat = await findChat(args[0]);
+            const groupName = groupAt(args[1]);
+            const member = chat && groupName ? await findMember(groupName, args[2]) : null;
+            if (!member) return toast(bot, query.id, 'That chat or member is no longer listed.', true);
+
+            const on = !(getMemberSettings(groupName, member.name).chatIds || []).includes(chat.chatId);
+            setMemberTargetsChat(groupName, member.name, chat.chatId, on);
+            await toast(bot, query.id, `${on ? '✅' : '⬜'} ${member.name} → ${chat.label}`);
+            return show(bot, await chatMembersView(args[0], args[1], args[3]), target);
+        }
+
+        case 'cma': {
+            const chat = await findChat(args[0]);
+            const groupName = groupAt(args[1]);
+            if (!chat || !groupName) return toast(bot, query.id, 'That chat is no longer listed.', true);
+
+            const on = args[2] === '1';
+            const members = await listGroupMembers(groupName);
+            for (const m of members) setMemberTargetsChat(groupName, m.name, chat.chatId, on);
+            await toast(bot, query.id, `${on ? '✅ Ticked' : '⬜ Unticked'} ${members.length} ${groupName} member(s)`);
+            return show(bot, await chatMembersView(args[0], args[1], 0), target);
         }
 
         case 'mp':

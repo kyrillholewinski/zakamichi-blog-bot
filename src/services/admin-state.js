@@ -18,6 +18,7 @@ import { PATHS, DAILY_TRANSLATION_QUOTA } from '../config/constants.js';
  *   },
  *   "blockedGroups": ["Bokuao"],
  *   "backfillFailures": { "Hinatazaka46/104023": 1 },
+ *   "chatSettings": { "-1001234567890": { "mode": "photos" } },
  *   "knownChats": {
  *     "-1001234567890": { "id": "-1001234567890", "title": "My channel", "type": "channel",
  *                         "status": "administrator", "canPost": true, "addedBy": 111, ... }
@@ -44,6 +45,7 @@ function defaultState() {
         members: {},
         blockedGroups: [],
         backfillFailures: {},
+        chatSettings: {},
         knownChats: {}
     };
 }
@@ -59,6 +61,7 @@ function loadState() {
             members: raw.members && typeof raw.members === 'object' ? raw.members : {},
             blockedGroups: Array.isArray(raw.blockedGroups) ? raw.blockedGroups.map(String) : [],
             backfillFailures: raw.backfillFailures && typeof raw.backfillFailures === 'object' ? raw.backfillFailures : {},
+            chatSettings: raw.chatSettings && typeof raw.chatSettings === 'object' ? raw.chatSettings : {},
             knownChats: raw.knownChats && typeof raw.knownChats === 'object' ? raw.knownChats : {}
         };
     } catch (err) {
@@ -273,4 +276,58 @@ export function forgetKnownChat(chatId) {
     delete state.knownChats[key];
     persist();
     return true;
+}
+
+// --- Per-chat settings ---
+//
+// What a chat receives, whichever route brought the post there:
+//   translated  the translated post (the default; falls back to Japanese when
+//               translation is off, paused or blocked for the author)
+//   japanese    the original Japanese post, never translated
+//   photos      only the photos/videos, with a short caption and no body text
+
+export const CHAT_MODES = Object.freeze(['translated', 'japanese', 'photos']);
+export const DEFAULT_CHAT_MODE = 'translated';
+
+export function getChatSettings(chatId) {
+    const stored = state.chatSettings[String(chatId)] || {};
+    const mode = CHAT_MODES.includes(stored.mode) ? stored.mode : DEFAULT_CHAT_MODE;
+    return { mode, modeIsDefault: !CHAT_MODES.includes(stored.mode) };
+}
+
+/** Sets a chat's content mode; null returns it to the default. */
+export function setChatMode(chatId, mode) {
+    const key = String(chatId);
+    const next = { ...state.chatSettings[key] };
+    if (mode && CHAT_MODES.includes(mode)) next.mode = mode;
+    else delete next.mode;
+
+    if (Object.keys(next).length) state.chatSettings[key] = next;
+    else delete state.chatSettings[key];
+    persist();
+}
+
+/**
+ * Members whose panel targets include a chat — the chat-side view of the same
+ * member ↔ chat relation that member settings store.
+ * @returns {Array<{groupName: string, memberName: string}>}
+ */
+export function listMembersTargetingChat(chatId) {
+    const key = String(chatId);
+    return Object.entries(state.members)
+        .filter(([, value]) => Array.isArray(value.chatIds) && value.chatIds.map(String).includes(key))
+        .map(([memberKeyValue]) => {
+            const slash = memberKeyValue.indexOf('/');
+            return { groupName: memberKeyValue.slice(0, slash), memberName: memberKeyValue.slice(slash + 1) };
+        });
+}
+
+/** Adds or removes one chat from a member's panel targets. */
+export function setMemberTargetsChat(groupName, memberName, chatId, on) {
+    const key = String(chatId);
+    const current = (getMemberSettings(groupName, memberName).chatIds || []).map(String);
+    const next = on
+        ? (current.includes(key) ? current : [...current, key])
+        : current.filter(id => id !== key);
+    return updateMemberSettings(groupName, memberName, { chatIds: next });
 }

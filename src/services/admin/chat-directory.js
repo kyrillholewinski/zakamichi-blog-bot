@@ -1,6 +1,6 @@
 import { ADMIN_BOT_TOKEN } from '../../config/constants.js';
 import { listRouteUsages } from '../../config/channels.js';
-import { listKnownChats } from '../admin-state.js';
+import { listKnownChats, getChatSettings } from '../admin-state.js';
 import { loadBroadcastStatus } from '../broadcaster.js';
 import { GROUP_LIST } from '../backfill.js';
 import { getBot } from '../telegram.js';
@@ -74,7 +74,7 @@ async function loadDeliveryStats() {
  * @param {object} [options]
  * @param {boolean} [options.fresh] - Re-ask Telegram instead of using cached names.
  * @returns {Promise<Array<{chatId, label, username, type, reachable, error, botToken,
- *          routes, joined, deliveries, lastDeliveredAt}>>} Reachable chats in use first.
+ *          routes, joined, mode, modeIsDefault, deliveries, lastDeliveredAt}>>} Reachable chats in use first.
  */
 export async function getChatDirectory({ fresh = false } = {}) {
     const chats = new Map();
@@ -130,6 +130,7 @@ export async function getChatDirectory({ fresh = false } = {}) {
             botTokens: entry.tokens,
             routes: entry.routes,
             joined: entry.joined,
+            ...getChatSettings(entry.chatId),
             deliveries: stats?.count || 0,
             lastDeliveredAt: stats?.lastAt || null
         });

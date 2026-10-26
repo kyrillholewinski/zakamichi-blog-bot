@@ -39,8 +39,11 @@ An owner-only admin panel in Telegram controls routing, translation and broadcas
    Or run it under pm2:
 
    ```bash
-   pm2 start index.js --name "zakamichi-blog-bot" -o ./logs/out.log -e ./logs/error.log --log-date-format "YYYY-MM-DD HH:mm:ss Z"
+   pm2 start src/index.js --name "zakamichi-blog-bot" -o ./logs/out.log -e ./logs/error.log --log-date-format "YYYY-MM-DD HH:mm:ss Z"
    ```
+
+Run it from the project root: `.env`, `config/config.json`, `record/` and `blogContent*/` are read
+relative to the current directory.
 
 The bot needs to be an admin of each target channel with permission to post messages.
 
@@ -57,7 +60,7 @@ A cycle that is still running when the next one is due makes the next one skip.
 | 00:00 – 07:59 | Backfill: translate archived HTML into `blogContent_TC/`, newest first, up to the daily quota (only when `ENABLE_TRANSLATION=true`) |
 | 00:00 UTC (09:00 JST) | The daily backfill quota resets |
 
-The windows are defined once in `services/schedule.js` and used by both the scheduler and the admin
+The windows are defined once in `src/services/schedule.js` and used by both the scheduler and the admin
 panel. **⏱ Schedule** in the panel shows each window, whether it is active now and when it next opens
 or closes, the next cycle time, the last crawl per group (new posts, duration), the last backfill run
 (translated, failed, why it stopped), the quota reset, and cycles skipped because the previous one
@@ -79,36 +82,38 @@ crawler → blogContent/<Group>/<id>.html          (skipped when archiving is of
 ## Project layout
 
 ```
-index.js                     scheduler: polling cycle, backfill, queue retries
+src/                           all code
+  index.js                     entry point: polling cycle, backfill, queue retries
+  config/
+    constants.js               environment variables, paths, group URLs, member lists
+    channels.js                loads config/config.json + admin overrides, resolves destinations
+  crawlers/                    one crawler per group, built on base.js
+  services/
+    blog-content.js            HTML → ordered blocks; detects image captions
+    translate.js               Gemini translation
+    archive-translation.js     translate-on-archive, reading the translated archive back for broadcasts
+    message-builder.js         Telegram captions and messages
+    telegram.js                Bot API client
+    broadcaster.js             translate → format → send, delivery records, queue retries
+    broadcast-queue.js         posts waiting to be broadcast
+    backfill.js                quota-limited archive translation, blog index, statistics
+    admin-state.js             admin panel state: flags, quota, member overrides, chats
+    schedule.js                crawl / backfill windows (JST) and last-run activity
+    scheduler.js               00:00 UTC quota reset
+    admin/
+      auth.js                  owner-only guard and rate limiter
+      chat-directory.js        every chat the bot broadcasts to, with live names
+      views.js                 admin panel screens and inline keyboards
+      bot.js                   long polling, button handling, chat-id input, joined chats
+  utils/                       HTTP, file system, date parsing helpers
 config/
-  constants.js               environment variables, paths, group URLs, member lists
-  channels.js                loads config/config.json + admin overrides, resolves destinations
-  config.example.json        broadcast config template (committed)
-  config.json                your broadcast config (gitignored, holds bot tokens)
-crawlers/                    one crawler per group, built on base.js
-services/
-  blog-content.js            HTML → ordered blocks; detects image captions
-  translate.js               Gemini translation
-  archive-translation.js     translate-on-archive, reading the translated archive back for broadcasts
-  message-builder.js         Telegram captions and messages
-  telegram.js                Bot API client
-  broadcaster.js             translate → format → send, delivery records, queue retries
-  broadcast-queue.js         posts waiting to be broadcast
-  backfill.js                quota-limited archive translation, blog index, statistics
-  admin-state.js             admin panel state: flags, quota, member overrides, joined chats
-  schedule.js                crawl / backfill windows (JST) and last-run activity
-  scheduler.js               00:00 UTC quota reset
-  admin/
-    auth.js                  owner-only guard and rate limiter
-    chat-directory.js        every chat the bot broadcasts to, with live names
-    views.js                 admin panel screens and inline keyboards
-    bot.js                   long polling, button handling, chat-id input, joined chats
-utils/                       HTTP, file system, date parsing helpers
-blogContent/                 raw article HTML per group
-blogContent_TC/              translated article HTML (+ <id>.json with the translated title),
-                             written on archiving and by the backfill
-record/                      per-group BlogStatus.JSON / BroadcastStatus.JSON,
-                             admin-state.json, broadcast-queue.json
+  config.example.json          broadcast config template (committed)
+  config.json                  your broadcast config (gitignored, holds bot tokens)
+blogContent/                   raw article HTML per group
+blogContent_TC/                translated article HTML (+ <id>.json with the translated title),
+                               written on archiving and by the backfill
+record/                        per-group BlogStatus.JSON / BroadcastStatus.JSON,
+                               admin-state.json, broadcast-queue.json
 ```
 
 ## Message layout
@@ -174,8 +179,10 @@ Telegram refuses polling and the log says so; remove the webhook first.
 │   ├─ 📦 Archive / backup on/off
 │   └─ 📡 Choose target chats   tap known chats on/off
 │       ├─ ⌨️ Type chat ids     (reply with ids, "-" to clear, /cancel to abort)
-│       └─ 🧹 Clear             (back to config.json routing)
+│       └─ 🧹 Clear             (remove the chats picked here)
 ├─ 📢 Chats             every chat the bot broadcasts to → chat details
+│   ├─ 🌐 Translated · 🇯🇵 Japanese · 🖼 Photos only   what the chat receives
+│   ├─ 👥 Members       group → tick the members whose posts the chat receives
 │   ├─ 🔄 Re-check      ask Telegram again (names are cached 10 minutes)
 │   └─ 🗑 Forget        for a chat the bot has left that nothing routes to
 ├─ 📰 Recent blogs      group → members (latest post first) → member's posts → pick a chat → send
@@ -193,12 +200,14 @@ Telegram refuses polling and the log says so; remove the webhook first.
 | **Translation block** (group or member) | Never translated: not on archiving, not by the backfill, not when broadcasting, and not by manual sends. Stronger than auto-translate off. |
 | **Auto-translate** (member) | The member's posts are not translated on archiving, are broadcast in Japanese and are skipped by the backfill. Manual sends still translate. |
 | **Archive / backup** (member) | New posts are not saved to `blogContent/` and are skipped by the backfill. They are still recorded in `BlogStatus.JSON` and still broadcast. |
-| **Target chats** (member) | Set: they replace the member's `config.json` route. Group and category routes still apply. They work even when the group is disabled in `config.json`. |
+| **Target chats** (member) | The member's posts also go to these chats, in addition to the `config.json` routes. They work even when the group is disabled in `config.json`. |
 
-Pick target chats from the list, or type numeric ids (`-1001234567890`) or public usernames
-(`@my_channel`). Each chat is posted with the bot that can reach it: the admin bot for a chat it was
-added to, else the bot `config.json` already uses for that chat, else the member's bot, the group bot,
-and finally the admin bot. That bot must be an admin of the chat.
+Member ↔ chat picks are one setting seen from two sides: **👥 Members → member → 📡 Choose target
+chats** and **📢 Chats → chat → 👥 Members** edit the same thing. Pick chats from the list, or type
+numeric ids (`-1001234567890`) or public usernames (`@my_channel`). Each chat is posted with the bot
+that can reach it: the admin bot for a chat it was added to, else the bot `config.json` already uses for
+that chat, else the member's bot, the group bot, and finally the admin bot. That bot must be an admin of
+the chat.
 
 ### Chats
 
@@ -218,10 +227,34 @@ When the admin bot is added to or removed from a chat, you get a short notice in
 per minute). Nothing is ever sent into that chat or to the person who added the bot, and a chat someone
 else added only receives posts after you route a member to it.
 
+#### What a chat receives
+
+Each chat has a content mode, set on its screen:
+
+| Mode | The chat receives |
+| --- | --- |
+| 🌐 **Translated** (default) | The translated post, reusing the translated archive when there is one. Falls back to Japanese when translation is paused, blocked or off for the author. |
+| 🇯🇵 **Japanese** | The original Japanese post. Never translated, so it costs no AI request. |
+| 🖼 **Photos only** | The photos and videos, captioned with member, title, time and the link to the original; no body text. Posts without photos are skipped for this chat. No AI request. |
+
+The mode belongs to the chat, whichever route brought the post there, and manual sends follow it too.
+
+#### Which members a chat receives
+
+**📢 Chats → chat → 👥 Members** lists the groups with how many of their members the chat receives, then
+the members of a group, most recently active first:
+
+- ✅ picked here: tap to switch off;
+- ⬜ not sent: tap to switch on (**✅ Tick all** / **⬜ Untick all** do the whole group);
+- 🔒 sent by `config.json`: a member or group-wide route there; change it in `config.json`.
+
+A category route in `config.json` also sends its matching posts, which the screen notes.
+
 ### Manual send
 
-Open a post from **Recent blogs** (group → member → post) and tap a chat. The post is sent there in
-translation, reusing the translated archive when it exists so no new AI request is made. ⭐ marks
+Open a post from **Recent blogs** (group → member → post) and tap a chat. The post is sent there in that
+chat's content mode (each button shows it); a translated chat reuses the translated archive when it
+exists, so no new AI request is made. ⭐ marks
 the chats its routing would use, and **My DM (preview)** sends it to you. Manual sends ignore both pause
 switches and the member's auto-translate setting (but not a translation block), do not use the quota, and are not recorded in
 `BroadcastStatus.JSON`, so you can send the same post again. Posts without saved HTML (shown as ∅)
@@ -353,21 +386,33 @@ The group's `target_language`, `thinking_level` and glossary also apply to the b
 
 ### Routing
 
-Each post is checked against target chats set in the admin panel, the member list, the category list,
-then the group-wide channels. All matches are combined and de-duplicated by bot token + chat id, so a
-channel never receives the same post twice. A member with `"enabled": false` in `config.json` is muted
-everywhere `config.json` routes it; admin-panel targets still apply. Each channel uses the translation
-and message settings of the route it came from. If the same channel appears in more than one route,
-the admin/member route wins over a category, and a category wins over the group default.
+Each post is checked against chats picked in the admin panel, the member list, the category list, then
+the group-wide channels. All matches are combined and de-duplicated by bot token + chat id, so a channel
+never receives the same post twice. Panel picks add to `config.json` routes; they never replace them. A
+member with `"enabled": false` in `config.json` is muted everywhere `config.json` routes it; admin-panel
+picks still apply. Each channel uses the translation and message settings of the route it came from, and
+its own content mode. If the same channel appears in more than one route, the admin/member route wins
+over a category, and a category wins over the group default.
 
 ### Delivery and retries
+
+A crawl puts its new posts into `record/broadcast-queue.json` **before** recording them in
+`BlogStatus.JSON`, then sends the queue. A restart at any point therefore cannot lose a post: whatever was
+not sent is still queued. Only posts published within `BROADCAST_MAX_AGE_HOURS` (default 72) are queued,
+and nothing is queued on a group's first crawl (an empty or unreadable `BlogStatus.JSON`), when every
+historical post looks new, so a channel is never flooded with the archive.
 
 Deliveries are recorded per group in `record/<Group>/BroadcastStatus.JSON`, keyed by blog id + chat
 id. After a restart nothing is sent again, and a newly added channel only receives future posts.
 
-If any destination fails, or broadcasting is paused, the post goes into `record/broadcast-queue.json`.
-The queue is retried at the start of every cycle and when broadcasting is resumed. Only the chats
-that missed the post receive it. A post that still fails after 5 retries is dropped and logged.
+The queue is sent after every crawl, at the start of every cycle and when broadcasting is resumed. While
+broadcasting is paused, posts wait in it. Only the chats that missed a post receive it, and a post that
+still fails after 5 attempts is dropped and logged.
+
+Telegram accepts albums of 2–10 items, so a single photo (a one-photo post, or the 11th photo of a long
+one) is sent on its own. If Telegram refuses an album because it cannot fetch one item (too large, gone,
+unsupported), the items are sent one by one and the refused ones skipped; if none get through, the
+caption is sent as text so the post is still announced.
 
 ### Admin state
 
@@ -384,6 +429,7 @@ that missed the post receive it. A post that still fails after 5 retries is drop
   },
   "blockedGroups": ["Bokuao"],                       // groups whose translation is blocked
   "backfillFailures": { "Hinatazaka46/104023": 1 },  // posts are skipped after 3
+  "chatSettings": { "-1001234567890": { "mode": "photos" } },   // translated | japanese | photos
   "knownChats": {                                    // chats the admin bot was added to
     "-1001234567890": { "id": "-1001234567890", "title": "My channel", "type": "channel",
                         "status": "administrator", "canPost": true, "addedBy": 111 }
@@ -400,6 +446,7 @@ that missed the post receive it. A post that still fails after 5 retries is drop
 | `TRANSLATE_ON_ARCHIVE` | `false` stops translating new posts as they are archived (default on) |
 | `ARCHIVE_TRANSLATE_MAX_AGE_HOURS` | Only posts younger than this are translated on archiving (default `72`) |
 | `ENABLE_BROADCAST` | `false` turns off all Telegram broadcasting (default on) |
+| `BROADCAST_MAX_AGE_HOURS` | Only posts published within this many hours are broadcast (default `72`) |
 | `CONFIG_FILE_NAME` | Path to the broadcast config (default `config/config.json`) |
 | `ADMIN_BOT_TOKEN` | Token of the bot that serves the admin panel |
 | `OWNER_USER_ID` | Your numeric Telegram user id; the only account the admin panel answers |

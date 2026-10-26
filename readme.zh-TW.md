@@ -38,8 +38,10 @@
    或使用 pm2 執行：
 
    ```bash
-   pm2 start index.js --name "zakamichi-blog-bot" -o ./logs/out.log -e ./logs/error.log --log-date-format "YYYY-MM-DD HH:mm:ss Z"
+   pm2 start src/index.js --name "zakamichi-blog-bot" -o ./logs/out.log -e ./logs/error.log --log-date-format "YYYY-MM-DD HH:mm:ss Z"
    ```
+
+請在專案根目錄執行：`.env`、`config/config.json`、`record/` 與 `blogContent*/` 都是相對於目前目錄讀取。
 
 Bot 必須是每個目標頻道的管理員，並具有發送訊息的權限。
 
@@ -56,7 +58,7 @@ Bot 必須是每個目標頻道的管理員，並具有發送訊息的權限。
 | 00:00 – 07:59 | 補翻譯：把已存檔的 HTML 翻譯到 `blogContent_TC/`，由新到舊，直到用完每日額度（需設定 `ENABLE_TRANSLATION=true`） |
 | UTC 00:00（JST 09:00） | 重設每日補翻譯額度 |
 
-各時段只在 `services/schedule.js` 定義一次，排程與管理面板共用同一份設定。管理面板的 **⏱ 執行時段** 會顯示：
+各時段只在 `src/services/schedule.js` 定義一次，排程與管理面板共用同一份設定。管理面板的 **⏱ 執行時段** 會顯示：
 各時段目前是否進行中、下一次開始或結束的時間、下一輪執行時間、各團體最近一次爬取（新文章數、耗時）、
 最近一次補翻譯（翻譯數、失敗數、停止原因）、額度重設時間，以及因上一輪尚未結束而略過的次數。
 執行紀錄保存在記憶體中，重新啟動後會清空。
@@ -77,36 +79,38 @@ Bot 必須是每個目標頻道的管理員，並具有發送訊息的權限。
 ## 專案結構
 
 ```
-index.js                     排程：輪詢週期、補翻譯、佇列重試
+src/                           所有程式碼
+  index.js                     進入點：輪詢週期、補翻譯、佇列重試
+  config/
+    constants.js               環境變數、路徑、各團體網址、成員名單
+    channels.js                讀取 config/config.json 與管理面板設定，決定推送目標
+  crawlers/                    各團體的爬蟲，皆繼承自 base.js
+  services/
+    blog-content.js            HTML → 依序排列的區塊；辨識圖片說明
+    translate.js               Gemini 翻譯
+    archive-translation.js     存檔時翻譯，並在推送時讀回翻譯存檔
+    message-builder.js         Telegram 圖片說明與訊息
+    telegram.js                Bot API 用戶端
+    broadcaster.js             翻譯 → 排版 → 發送，記錄推送結果並重試佇列
+    broadcast-queue.js         等待推送的文章
+    backfill.js                依額度補翻譯存檔、文章索引、統計
+    admin-state.js             管理面板狀態：開關、額度、成員設定、聊天室
+    schedule.js                爬取／補翻譯時段（JST）與最近執行紀錄
+    scheduler.js               UTC 00:00 重設額度
+    admin/
+      auth.js                  僅限擁有者的檢查與頻率限制
+      chat-directory.js        Bot 推送的所有聊天室與其即時名稱
+      views.js                 管理面板畫面與內嵌按鈕
+      bot.js                   長輪詢、按鈕處理、頻道 ID 輸入、記錄加入的聊天室
+  utils/                       HTTP、檔案系統、日期解析等工具
 config/
-  constants.js               環境變數、路徑、各團體網址、成員名單
-  channels.js                讀取 config/config.json 與管理面板設定，決定推送目標
-  config.example.json        推送設定範本（納入版本控制）
-  config.json                你的推送設定（已加入 .gitignore，內含 Bot Token）
-crawlers/                    各團體的爬蟲，皆繼承自 base.js
-services/
-  blog-content.js            HTML → 依序排列的區塊；辨識圖片說明
-  translate.js               Gemini 翻譯
-  archive-translation.js     存檔時翻譯，並在推送時讀回翻譯存檔
-  message-builder.js         Telegram 圖片說明與訊息
-  telegram.js                Bot API 用戶端
-  broadcaster.js             翻譯 → 排版 → 發送，記錄推送結果並重試佇列
-  broadcast-queue.js         等待推送的文章
-  backfill.js                依額度補翻譯存檔、文章索引、統計
-  admin-state.js             管理面板狀態：開關、額度、成員設定、已加入的聊天室
-  schedule.js                爬取／補翻譯時段（JST）與最近執行紀錄
-  scheduler.js               UTC 00:00 重設額度
-  admin/
-    auth.js                  僅限擁有者的檢查與頻率限制
-    chat-directory.js        Bot 推送的所有聊天室與其即時名稱
-    views.js                 管理面板畫面與內嵌按鈕
-    bot.js                   長輪詢、按鈕處理、頻道 ID 輸入、記錄加入的聊天室
-utils/                       HTTP、檔案系統、日期解析等工具
-blogContent/                 各團體的原始文章 HTML
-blogContent_TC/              翻譯版文章 HTML（另有 <id>.json 存放翻譯後標題），
-                             由存檔時翻譯與補翻譯寫入
-record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON、
-                             admin-state.json、broadcast-queue.json
+  config.example.json          推送設定範本（納入版本控制）
+  config.json                  你的推送設定（已加入 .gitignore，內含 Bot Token）
+blogContent/                   各團體的原始文章 HTML
+blogContent_TC/                翻譯版文章 HTML（另有 <id>.json 存放翻譯後標題），
+                               由存檔時翻譯與補翻譯寫入
+record/                        各團體的 BlogStatus.JSON／BroadcastStatus.JSON、
+                               admin-state.json、broadcast-queue.json
 ```
 
 ## 訊息格式
@@ -166,8 +170,10 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 │   ├─ 📦 存檔／備份 開／關
 │   └─ 📡 選擇推送目標          點選已知聊天室開／關
 │       ├─ ⌨️ 輸入頻道 ID       （回覆頻道 ID；「-」清除；/cancel 取消）
-│       └─ 🧹 清除              （改回使用 config.json 的設定）
+│       └─ 🧹 清除              （移除在此選擇的聊天室）
 ├─ 📢 聊天室            Bot 推送的所有聊天室 → 聊天室詳細資料
+│   ├─ 🌐 翻譯版 · 🇯🇵 日文原文 · 🖼 僅照片   該聊天室收到的內容
+│   ├─ 👥 成員          團體 → 勾選要推送到此聊天室的成員
 │   ├─ 🔄 重新檢查      重新向 Telegram 查詢（名稱快取 10 分鐘）
 │   └─ 🗑 移除紀錄      適用於 Bot 已離開、且沒有任何推送規則的聊天室
 ├─ 📰 最新文章          團體 → 成員（依最新文章排序）→ 該成員的文章 → 選擇聊天室 → 發送
@@ -185,9 +191,10 @@ record/                      各團體的 BlogStatus.JSON／BroadcastStatus.JSON
 | **翻譯封鎖**（團體或成員） | 完全不翻譯：存檔時、補翻譯、推送與手動推送都不翻譯。比關閉自動翻譯更嚴格。 |
 | **自動翻譯**（成員） | 該成員的文章存檔時不翻譯、以日文原文推送，並且不列入補翻譯；手動推送仍會翻譯。 |
 | **存檔／備份**（成員） | 新文章不會存到 `blogContent/`，也不列入補翻譯；但仍會記錄在 `BlogStatus.JSON` 並照常推送。 |
-| **推送目標**（成員） | 設定後會取代該成員在 `config.json` 中的推送設定；團體與分類的推送仍然有效。即使團體在 `config.json` 中為停用狀態也會生效。 |
+| **推送目標**（成員） | 該成員的文章除了 `config.json` 的推送規則之外，也會送到這些聊天室。即使團體在 `config.json` 中為停用狀態也會生效。 |
 
-推送目標可從清單點選，或輸入數字 ID（`-1001234567890`）或公開帳號（`@my_channel`）。每個聊天室都由能送達的 Bot 發送：
+成員 ↔ 聊天室的選擇是同一個設定的兩個入口：**👥 成員 → 成員 → 📡 選擇推送目標** 與 **📢 聊天室 → 聊天室 → 👥 成員**
+修改的是同一份資料。推送目標可從清單點選，或輸入數字 ID（`-1001234567890`）或公開帳號（`@my_channel`）。每個聊天室都由能送達的 Bot 發送：
 Bot 曾被加入的聊天室使用管理面板的 Bot；否則使用 `config.json` 中已用於該聊天室的 Bot；再否則依序使用成員的 Bot、
 團體的 Bot，最後是管理面板的 Bot。該 Bot 必須是目標聊天室的管理員。
 
@@ -206,9 +213,31 @@ Telegram 沒有讓 Bot 列出自己所在聊天室的功能，因此 **📢 聊�
 管理面板的 Bot 被加入或移出聊天室時，你會在私訊中收到簡短通知（每分鐘最多幾則）。Bot 不會在該聊天室發送任何訊息，
 也不會回覆加入它的人；由他人加入的聊天室，只有在你把成員的推送目標設為它之後才會收到文章。
 
+#### 聊天室收到的內容
+
+每個聊天室都有內容模式，可在聊天室畫面中設定：
+
+| 模式 | 聊天室收到的內容 |
+| --- | --- |
+| 🌐 **翻譯版**（預設） | 翻譯後的文章；若已有翻譯存檔則直接沿用。翻譯暫停、被封鎖或該作者關閉翻譯時，改發日文原文。 |
+| 🇯🇵 **日文原文** | 日文原文，永不翻譯，因此不會發出 AI 請求。 |
+| 🖼 **僅照片** | 只有照片與影片，說明文字包含成員、標題、時間與原文連結，不含內文。沒有照片的文章不會送到此聊天室。不會發出 AI 請求。 |
+
+內容模式屬於聊天室本身，無論文章經由哪條推送規則送達都適用，手動推送也一樣。
+
+#### 聊天室收到哪些成員
+
+**📢 聊天室 → 聊天室 → 👥 成員** 會先列出各團體與此聊天室收到其中多少位成員，再列出該團體的成員（依最新文章排序）：
+
+- ✅ 在此選擇：點選即可關閉；
+- ⬜ 不推送：點選即可開啟（**✅ 全選**／**⬜ 全不選** 套用到整個團體）；
+- 🔒 由 `config.json` 推送：來自該檔的成員或團體共用規則，請在 `config.json` 中修改。
+
+`config.json` 中的分類規則也會推送符合條件的文章，畫面上會另外註明。
+
 ### 手動推送
 
-從**最新文章**（團體 → 成員 → 文章）開啟一篇文章，再點選一個聊天室，就會以翻譯版發送過去；若已有翻譯存檔則直接沿用，不會再發出新的 AI 請求。⭐ 表示該文章依推送規則會送達的聊天室，
+從**最新文章**（團體 → 成員 → 文章）開啟一篇文章，再點選一個聊天室，就會依該聊天室的內容模式發送（每個按鈕都會顯示）；翻譯版聊天室若已有翻譯存檔則直接沿用，不會再發出新的 AI 請求。⭐ 表示該文章依推送規則會送達的聊天室，
 **My DM (preview)** 則會發送給你自己。手動推送不受兩個暫停開關與成員自動翻譯設定影響（但翻譯封鎖仍然有效），不佔用額度，
 也不會寫入 `BroadcastStatus.JSON`，因此同一篇文章可以重複發送。沒有存檔 HTML 的文章（標示為 ∅）無法發送。
 
@@ -326,18 +355,28 @@ Telegram 沒有讓 Bot 列出自己所在聊天室的功能，因此 **📢 聊�
 
 ### 推送規則
 
-每篇文章依序比對管理面板設定的推送目標、成員清單、分類清單，最後是團體共用頻道。所有符合的目標會合併，
-並以 Bot Token + 頻道 ID 去除重複，因此同一個頻道不會收到同一篇文章兩次。在 `config.json` 中設為
-`"enabled": false` 的成員，在 `config.json` 設定的所有頻道都不會推送；管理面板設定的目標仍然有效。
-每個頻道使用其來源規則的翻譯與訊息設定；同一個頻道出現在多個規則時，優先順序為管理面板／成員 > 分類 > 團體預設。
+每篇文章依序比對管理面板選擇的聊天室、成員清單、分類清單，最後是團體共用頻道。所有符合的目標會合併，
+並以 Bot Token + 頻道 ID 去除重複，因此同一個頻道不會收到同一篇文章兩次。管理面板的選擇是加在 `config.json`
+規則之上，不會取代它們。在 `config.json` 中設為 `"enabled": false` 的成員，在 `config.json` 設定的所有頻道都不會推送；
+管理面板的選擇仍然有效。每個頻道使用其來源規則的翻譯與訊息設定，以及自己的內容模式；同一個頻道出現在多個規則時，
+優先順序為管理面板／成員 > 分類 > 團體預設。
 
 ### 推送紀錄與重試
+
+每次爬取會**先**把新文章放進 `record/broadcast-queue.json`，**再**寫入 `BlogStatus.JSON`，之後才發送佇列。
+因此任何時候重新啟動都不會遺失文章：尚未發送的仍在佇列中。只有在 `BROADCAST_MAX_AGE_HOURS`（預設 72）小時內發布的文章
+才會進入佇列；團體的第一次爬取（`BlogStatus.JSON` 為空或無法讀取）不會放入任何文章，因為此時所有歷史文章都會被視為新文章，
+這樣頻道就不會被整個存檔洗版。
 
 推送紀錄依團體儲存在 `record/<團體>/BroadcastStatus.JSON`，以文章 ID + 頻道 ID 為鍵。
 重新啟動後不會重複發送，新加入的頻道只會收到之後的新文章。
 
-只要有任一目標發送失敗，或推送處於暫停狀態，文章就會進入 `record/broadcast-queue.json`。
-佇列會在每一輪開始時以及恢復推送時重試，且只發送給尚未收到的聊天室。重試 5 次仍失敗的文章會被移除並記錄在記錄檔中。
+佇列會在每次爬取後、每一輪開始時以及恢復推送時發送；推送暫停期間文章會留在佇列中。只會發送給尚未收到的聊天室，
+嘗試 5 次仍失敗的文章會被移除並記錄在記錄檔中。
+
+Telegram 的相簿必須有 2–10 個項目，因此單張照片（只有一張照片的文章，或長文章的第 11 張）會單獨發送。
+若 Telegram 因為無法取得其中某個項目（檔案過大、已刪除或格式不支援）而拒收整組相簿，會改為逐張發送並略過被拒的項目；
+若全部都無法送出，則以文字發送說明，讓文章仍然有被公告。
 
 ### 管理面板狀態
 
@@ -354,6 +393,7 @@ Telegram 沒有讓 Bot 列出自己所在聊天室的功能，因此 **📢 聊�
   },
   "blockedGroups": ["Bokuao"],                       // 封鎖翻譯的團體
   "backfillFailures": { "Hinatazaka46/104023": 1 },  // 失敗 3 次後略過
+  "chatSettings": { "-1001234567890": { "mode": "photos" } },   // translated | japanese | photos
   "knownChats": {                                    // 管理面板的 Bot 被加入的聊天室
     "-1001234567890": { "id": "-1001234567890", "title": "My channel", "type": "channel",
                         "status": "administrator", "canPost": true, "addedBy": 111 }
@@ -370,6 +410,7 @@ Telegram 沒有讓 Bot 列出自己所在聊天室的功能，因此 **📢 聊�
 | `TRANSLATE_ON_ARCHIVE` | 設為 `false` 時，新文章存檔時不再立即翻譯（預設開啟） |
 | `ARCHIVE_TRANSLATE_MAX_AGE_HOURS` | 只有發布時間在此時數內的文章會在存檔時翻譯（預設 `72`） |
 | `ENABLE_BROADCAST` | 設為 `false` 時關閉所有 Telegram 推送（預設開啟） |
+| `BROADCAST_MAX_AGE_HOURS` | 只推送在這麼多小時內發布的文章（預設 `72`） |
 | `CONFIG_FILE_NAME` | 推送設定檔路徑（預設 `config/config.json`） |
 | `ADMIN_BOT_TOKEN` | 提供管理面板的 Bot Token |
 | `OWNER_USER_ID` | 你的 Telegram 數字使用者 ID；管理面板只回應這個帳號 |

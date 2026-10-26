@@ -199,7 +199,9 @@ export function buildBlogMessage(post, settings = {}) {
         show_image_markers: showImageMarkers = true,
         attribution = '',
         max_media_per_group: maxMediaPerGroup = 10,
-        send_media: sendMedia = true
+        send_media: sendMedia = true,
+        // false = photos-only: header and footer, no body text.
+        include_body: includeBody = true
     } = settings;
 
     const blocks = classifyBlocks(post.blocks || []);
@@ -223,7 +225,7 @@ export function buildBlogMessage(post, settings = {}) {
         ? buildFooter({ sourceUrl: post.sourceUrl, attribution, imageCount: mediaItems.length })
         : '';
 
-    const bodyFragments = renderBody(blocks, { showOriginal, showImageMarkers });
+    const bodyFragments = includeBody ? renderBody(blocks, { showOriginal, showImageMarkers }) : [];
     const allFragments = [header, ...bodyFragments].filter(Boolean);
     const fullChunks = packFragments(allFragments, MESSAGE_LIMIT, { suffix: footer });
 

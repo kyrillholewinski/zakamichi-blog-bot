@@ -1,7 +1,7 @@
 import pLimit from 'p-limit';
 import os from 'os';
 import { loadBlogStatus, saveBlogStatus, saveBlogContent } from '../utils/file-system.js';
-import { broadcastBlogs } from '../services/broadcaster.js';
+import { queueNewPosts, drainBroadcastQueue } from '../services/broadcaster.js';
 import { translateNewArchives } from '../services/archive-translation.js';
 import { invalidateBlogIndex } from '../services/backfill.js';
 import { getMemberSettings } from '../services/admin-state.js';
@@ -63,15 +63,25 @@ export class BaseCrawler {
             page += 1;
         }
         if (this.newBlogsCount > 0) {
+            // Queue before recording: once a post is in BlogStatus.JSON it is never
+            // "new" again, so a restart before it is sent would lose it. An empty
+            // manifest at the start means a first crawl, whose posts are all old.
+            queueNewPosts(this.groupName, this.newBlogs, { bootstrap: startCount === 0 });
+
             console.log(`💾 Saving ${this.newBlogsCount} new blogs for ${this.groupName}...`);
             await saveBlogStatus(this.groupName, this.existingBlogs, this.memberMap);
+
             // Translate into the archive first, so the broadcast below reuses it
-            // instead of making its own AI request.
-            await translateNewArchives(this.groupName, this.newBlogs);
+            // instead of making its own AI request. A failure here must not hold
+            // the posts back: the broadcaster translates on its own if needed.
+            try {
+                await translateNewArchives(this.groupName, this.newBlogs);
+            } catch (err) {
+                console.error(`❌ ${this.groupName}: translating new archives failed: ${err.message}`);
+            }
             invalidateBlogIndex();
-            // Broadcast after the manifest is on disk: a crash mid-send then resumes
-            // from BroadcastStatus.JSON instead of re-crawling everything.
-            await broadcastBlogs(this.groupName, this.newBlogs);
+
+            await drainBroadcastQueue();
         } else {
             console.log(`✅ Up to date.`);
         }

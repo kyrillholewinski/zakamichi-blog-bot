@@ -19,6 +19,11 @@ export const ARCHIVE_TRANSLATE_MAX_AGE_HOURS = parseInt(process.env.ARCHIVE_TRAN
 // live in CONFIG_FILE_NAME so channels can be changed without touching code.
 export const ENABLE_BROADCAST = process.env.ENABLE_BROADCAST !== 'false';
 
+// Only posts published within this many hours are broadcast (default 72). Older
+// posts that a crawl turns up (e.g. after BlogStatus.JSON is lost) are recorded
+// but never sent, so a channel is not flooded with the archive.
+export const BROADCAST_MAX_AGE_HOURS = parseInt(process.env.BROADCAST_MAX_AGE_HOURS, 10) || 72;
+
 export const CONFIG_FILE_NAME = process.env.CONFIG_FILE_NAME || 'config/config.json';
 
 // Admin panel. Both must be set for the panel to start; every update from any

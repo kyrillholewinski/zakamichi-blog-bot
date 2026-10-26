@@ -13,7 +13,9 @@ import {
     getQuota,
     getMemberSettings,
     isGroupTranslationBlocked,
-    isTranslationBlocked
+    isTranslationBlocked,
+    getChatSettings,
+    CHAT_MODES
 } from '../admin-state.js';
 
 /**
@@ -28,6 +30,11 @@ import {
  *   sc                       crawl / backfill schedule and last runs
  *   ch:<page>                chat directory
  *   cv|cr|cf:<chat>          chat detail, re-check it, forget it
+ *   cmo:<chat>:<t|j|p|d>     set the chat's content mode (translated / japanese / photos / default)
+ *   cm:<chat>                the chat's members: pick a group
+ *   cmg:<chat>:<g>:<page>    the chat's members in one group
+ *   cmt:<chat>:<g>:<hash>:<page>  toggle one member for the chat
+ *   cma:<chat>:<g>:<1|0>     tick / untick every member of the group for the chat
  *   fl:t | fl:b              toggle translation / broadcasting pause
  *   q | q:d:<delta> | q:r    quota view, change daily limit, reset today's usage
  *   mg                       pick a group's members
@@ -54,6 +61,11 @@ const MAX_TARGET_BUTTONS = 20;
 export const shortHash = (value) => crypto.createHash('sha1').update(String(value)).digest('hex').slice(0, 8);
 export const groupIndexOf = (groupName) => GROUP_LIST.indexOf(groupName);
 export const groupAt = (index) => GROUP_LIST[Number(index)] || null;
+
+export const MODE_ICONS = { translated: '🌐', japanese: '🇯🇵', photos: '🖼' };
+export const MODE_NAMES = { translated: 'Translated', japanese: 'Japanese', photos: 'Photos only' };
+export const MODE_CODES = { t: 'translated', j: 'japanese', p: 'photos', d: null };
+const modeLabel = (mode) => `${MODE_ICONS[mode]} ${MODE_NAMES[mode]}`;
 
 const button = (text, data) => ({ text, callback_data: data });
 const backRow = (data = 'menu', text = '◀ Back') => [button(text, data)];
@@ -268,11 +280,11 @@ export async function memberView(groupIndex, hash) {
         `🚫 Translation block: <b>${settings.translationBlocked ? 'Blocked' : 'Not blocked'}</b>${groupBlocked ? ' (whole group blocked)' : ''}`,
         `🌐 Auto-translate: <b>${settings.autoTranslate ? 'On' : 'Off'}</b>`,
         `📦 Archive / backup: <b>${settings.archive ? 'On' : 'Off'}</b>`,
-        `📡 Targets set here: ${settings.chatIds?.length ? settings.chatIds.map(c => `<code>${escapeHtml(c)}</code>`).join(', ') : 'none (config.json decides)'}`,
+        `📡 Chats picked here: ${settings.chatIds?.length ? settings.chatIds.map(c => `<code>${escapeHtml(c)}</code>`).join(', ') : 'none'} <i>(in addition to config.json)</i>`,
         '',
         '<b>New posts currently go to</b>',
         ...(routing.length
-            ? routing.map(d => `• ${escapeHtml(d.label)} → <code>${escapeHtml(d.chatId)}</code>`)
+            ? routing.map(d => `• ${escapeHtml(d.label)} → <code>${escapeHtml(d.chatId)}</code> ${MODE_ICONS[d.mode]}`)
             : ['• nowhere'])
     ];
     if (!settings.archive) lines.push('', '🗑 Archive off: new posts are not saved to blogContent/ and are skipped by the backfill.');
@@ -285,7 +297,7 @@ export async function memberView(groupIndex, hash) {
         [button(`📦 Archive: ${settings.archive ? 'On → Off' : 'Off → On'}`, `ma:${groupIndex}:${hash}`)],
         [button('📡 Choose target chats', `mp:${groupIndex}:${hash}:0`)]
     ];
-    if (settings.chatIds?.length) rows.push([button('🧹 Clear targets (use config.json)', `mx:${groupIndex}:${hash}`)]);
+    if (settings.chatIds?.length) rows.push([button('🧹 Clear chats picked here', `mx:${groupIndex}:${hash}`)]);
     rows.push(backRow(`ml:${groupIndex}:0`, '◀ Members'));
 
     return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
@@ -386,7 +398,7 @@ export function getBlogTargets(groupName, blog) {
     const routed = resolveDestinations(groupName, blog).map(d => ({ ...d, routed: true }));
     const known = listKnownTargets(groupName).map(d => ({ ...d, routed: false }));
     const dm = ADMIN_BOT_TOKEN && OWNER_USER_ID
-        ? [{ chatId: OWNER_USER_ID, botToken: ADMIN_BOT_TOKEN, label: 'My DM (preview)', routed: false, ...getFallbackSettings(groupName) }]
+        ? [{ chatId: OWNER_USER_ID, botToken: ADMIN_BOT_TOKEN, label: 'My DM (preview)', routed: false, ...getFallbackSettings(groupName), mode: getChatSettings(OWNER_USER_ID).mode }]
         : [];
 
     const seen = new Set();
@@ -432,9 +444,11 @@ export async function blogView(groupIndex, blogId, memberHash, page = 0) {
         } else if (entry.translated) {
             lines.push('🗂 The translated archive is reused, so sending needs no new AI request.');
         }
-        lines.push('Tap a chat to translate this post and send it there. ⭐ = where its routing sends it. Manual sends ignore both pause switches and do not use the quota.');
+        lines.push(
+            'Tap a chat to send this post there, in that chat\'s content mode (🌐 translated · 🇯🇵 Japanese · 🖼 photos only). ⭐ = where its routing sends it. Manual sends ignore both pause switches and do not use the quota.'
+        );
         for (const target of targets.slice(0, MAX_TARGET_BUTTONS)) {
-            rows.push([button(`${target.routed ? '⭐' : '➡️'} ${truncate(target.label, 28)} · ${target.chatId}`, `bs:${groupIndex}:${entry.id}:${target.hash}`)]);
+            rows.push([button(`${target.routed ? '⭐' : '➡️'} ${MODE_ICONS[target.mode] || ''} ${truncate(target.label, 26)} · ${target.chatId}`, `bs:${groupIndex}:${entry.id}:${target.hash}`)]);
         }
     }
     rows.push(back);
@@ -541,7 +555,7 @@ export async function chatsView(page, { fresh = false } = {}) {
     const slice = chats.slice(current * CHATS_PER_PAGE, (current + 1) * CHATS_PER_PAGE);
 
     const rows = slice.map(c => [button(
-        `${chatStatusIcon(c)} ${chatKindIcon(c.type)} ${truncate(c.label, 26)} · ${c.routes.length} route${c.routes.length === 1 ? '' : 's'}`,
+        `${chatStatusIcon(c)} ${chatKindIcon(c.type)} ${MODE_ICONS[c.mode]} ${truncate(c.label, 24)} · ${c.routes.length} route${c.routes.length === 1 ? '' : 's'}`,
         `cv:${shortHash(c.chatId)}`
     )]);
     if (pageCount > 1) rows.push(pageRow('ch', current, pageCount));
@@ -553,6 +567,7 @@ export async function chatsView(page, { fresh = false } = {}) {
         '',
         '🟢 receiving posts · ⚪ known, nothing routed · ❌ bot cannot reach it',
         '📢 channel · 👥 group · 👤 private · ❔ unknown',
+        '🌐 translated · 🇯🇵 Japanese · 🖼 photos only',
         '',
         chats.length
             ? 'Tap a chat for its routes and deliveries.'
@@ -589,12 +604,23 @@ export async function chatView(hash, { fresh = false } = {}) {
     }
 
     lines.push(`Delivered: ${fmt(chat.deliveries)} post(s)${chat.lastDeliveredAt ? ` · last ${formatJstTimestamp(chat.lastDeliveredAt)} JST` : ''}`);
+    lines.push(`Content: <b>${modeLabel(chat.mode)}</b>${chat.modeIsDefault ? ' <i>(default)</i>' : ''}`);
     lines.push('', '<b>Routes</b>');
     lines.push(...(chat.routes.length
         ? chat.routes.map(r => `• ${escapeHtml(r.label)}${r.enabled ? '' : ' <i>(disabled)</i>'}`)
-        : ['• none. Pick it under 👥 Members → 📡 Choose target chats.']));
+        : ['• none. Tap 👥 Members to pick whose posts it receives.']));
 
-    const rows = [[button('🔄 Re-check', `cr:${hash}`)]];
+    const memberCount = new Set(chat.routes
+        .filter(r => r.kind === 'admin' || r.kind === 'member')
+        .map(r => `${r.groupName}/${r.memberName}`)).size;
+    const rows = [
+        CHAT_MODES.map(mode => button(
+            `${chat.mode === mode ? '● ' : ''}${modeLabel(mode)}`,
+            `cmo:${hash}:${Object.keys(MODE_CODES).find(code => MODE_CODES[code] === mode)}`
+        )),
+        [button(`👥 Members (${memberCount})`, `cm:${hash}`)],
+        [button('🔄 Re-check', `cr:${hash}`)]
+    ];
     if (chat.joined && !chat.joined.active && !chat.routes.length) rows.push([button('🗑 Forget this chat', `cf:${hash}`)]);
     rows.push(backRow('ch:0', '◀ Chats'));
     return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
@@ -620,16 +646,96 @@ export async function memberTargetsView(groupIndex, hash, page) {
     )]);
     if (pageCount > 1) rows.push(pageRow(`mp:${groupIndex}:${hash}`, current, pageCount));
     rows.push([button('⌨️ Type chat ids', `mc:${groupIndex}:${hash}`)]);
-    if (selected.size) rows.push([button('🧹 Clear (use config.json)', `mx:${groupIndex}:${hash}`)]);
+    if (selected.size) rows.push([button('🧹 Clear chats picked here', `mx:${groupIndex}:${hash}`)]);
     rows.push(backRow(`m:${groupIndex}:${hash}`, `◀ ${truncate(member.name, 20)}`));
 
     const lines = [
-        `📡 <b>Targets for ${escapeHtml(member.name)}</b> · ${escapeHtml(groupName)}`,
+        `📡 <b>Chats for ${escapeHtml(member.name)}</b> · ${escapeHtml(groupName)}`,
         '',
-        `Selected: ${selected.size || 'none, so config.json decides'}`,
-        "Tap a chat to switch it on or off. Selected chats replace the member's config.json route; group and category routes still apply."
+        `Picked here: ${selected.size || 'none'}`,
+        'Tap a chat to switch it on or off. Picked chats receive this member\'s posts in addition to the config.json routes. The same choice is made from 📢 Chats → a chat → 👥 Members.'
     ];
     if (!chats.length) lines.push('', 'No reachable chats are known yet. Add the admin bot to a channel, or type an id.');
+
+    return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
+}
+
+// --- A chat's members ---
+
+const CHAT_MEMBERS_PER_PAGE = 10;
+
+/**
+ * How config.json already routes a group into a chat, which the panel cannot
+ * switch off: a group-wide route sends every member; member routes send those
+ * members; a category sends whatever matches it.
+ */
+function configRoutingInto(chat, groupName) {
+    const routes = chat.routes.filter(r => r.groupName === groupName && r.enabled);
+    return {
+        wholeGroup: routes.some(r => r.kind === 'group'),
+        members: new Set(routes.filter(r => r.kind === 'member').map(r => r.memberName)),
+        categories: routes.filter(r => r.kind === 'category').map(r => r.label)
+    };
+}
+
+/** Chat members, step 1: pick a group, with how many of its members the chat receives. */
+export async function chatMemberGroupsView(chatHash) {
+    const chat = await findChat(chatHash);
+    if (!chat) return { text: 'Chat not found.', reply_markup: { inline_keyboard: [backRow('ch:0', '◀ Chats')] } };
+
+    const rows = [];
+    for (const [index, group] of GROUP_LIST.entries()) {
+        const members = await listGroupMembers(group);
+        const config = configRoutingInto(chat, group);
+        const receiving = members.filter(m =>
+            config.members.has(m.name) || (getMemberSettings(group, m.name).chatIds || []).includes(chat.chatId)
+        ).length;
+        const label = config.wholeGroup
+            ? `🔒 ${group} · all (config.json)`
+            : `${group} · ${receiving}/${members.length}`;
+        rows.push([button(label, `cmg:${chatHash}:${index}:0`)]);
+    }
+    rows.push(backRow(`cv:${chatHash}`, `◀ ${truncate(chat.label, 20)}`));
+
+    const text = [
+        `👥 <b>Members for ${escapeHtml(chat.label)}</b>`,
+        '',
+        `Pick a group, then tick the members whose posts this chat receives. Posts arrive as: ${modeLabel(chat.mode)}.`
+    ].join('\n');
+    return { text, reply_markup: { inline_keyboard: rows } };
+}
+
+/** Chat members, step 2: tick members of one group for the chat. */
+export async function chatMembersView(chatHash, groupIndex, page) {
+    const groupName = groupAt(groupIndex);
+    const chat = await findChat(chatHash);
+    if (!chat || !groupName) return { text: 'Chat not found.', reply_markup: { inline_keyboard: [backRow('ch:0', '◀ Chats')] } };
+
+    const members = await listGroupMembers(groupName);
+    const config = configRoutingInto(chat, groupName);
+    const pageCount = Math.max(1, Math.ceil(members.length / CHAT_MEMBERS_PER_PAGE));
+    const current = clampPage(page, pageCount);
+    const slice = members.slice(current * CHAT_MEMBERS_PER_PAGE, (current + 1) * CHAT_MEMBERS_PER_PAGE);
+
+    const rows = slice.map(m => {
+        const picked = (getMemberSettings(groupName, m.name).chatIds || []).includes(chat.chatId);
+        const locked = config.wholeGroup || config.members.has(m.name);
+        const icon = picked ? '✅' : locked ? '🔒' : '⬜';
+        return [button(`${icon} ${truncate(m.name, 18)} · ${shortDate(m.latest)}`, `cmt:${chatHash}:${groupIndex}:${m.hash}:${current}`)];
+    });
+    if (pageCount > 1) rows.push(pageRow(`cmg:${chatHash}:${groupIndex}`, current, pageCount));
+    rows.push([button('✅ Tick all', `cma:${chatHash}:${groupIndex}:1`), button('⬜ Untick all', `cma:${chatHash}:${groupIndex}:0`)]);
+    rows.push(backRow(`cm:${chatHash}`, '◀ Groups'));
+
+    const lines = [
+        `👥 <b>${escapeHtml(groupName)} → ${escapeHtml(chat.label)}</b>`,
+        '',
+        '✅ picked here · 🔒 sent by config.json (change it there) · ⬜ not sent',
+        'Tap a member to switch them on or off for this chat. Members ordered by their latest post.'
+    ];
+    if (config.wholeGroup) lines.push('', '🔒 config.json sends this whole group here; ticking members adds nothing until that route is removed.');
+    if (config.categories.length) lines.push('', `🔒 Category routes also send matching posts: ${config.categories.map(escapeHtml).join(', ')}`);
+    if (!chat.reachable) lines.push('', `❌ The bot cannot reach this chat right now: ${escapeHtml(chat.error || 'unknown error')}`);
 
     return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
 }
