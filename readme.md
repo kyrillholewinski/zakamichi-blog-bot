@@ -218,10 +218,12 @@ Telegram has no way for a bot to list the chats it is in, so **📢 Chats** buil
 - chats the admin bot was **added to**: Telegram sends a `my_chat_member` update when the bot is added,
   promoted or removed, and the bot records it.
 
-Each chat shows its live name and type (📢 channel · 👥 group · 👤 private), looked up with `getChat`
-through the bot that posts there, so ❌ means that bot really cannot reach it. The details show the chat
-id, which bot posts there, every route that uses it, how many posts it has received and when the last
-one arrived, and for joined chats, who added the bot.
+Chats are always shown by their name and type (📢 channel · 👥 group · 👤 private), looked up with
+`getChat` through the bot that posts there, so ❌ means that bot really cannot reach it. The list shows
+what each chat receives ("all Bokuao + 2 members"). A chat's own screen shows its id, which bot posts
+there, whose posts it receives per group, how many posts it has received and when the last one arrived,
+and for joined chats, who added the bot. That screen is the only place a chat id is shown, except for a
+chat the bot cannot see, which has no name to show.
 
 When the admin bot is added to or removed from a chat, you get a short notice in your DM (at most a few
 per minute). Nothing is ever sent into that chat or to the person who added the bot, and a chat someone
@@ -252,10 +254,11 @@ A category route in `config.json` also sends its matching posts, which the scree
 
 ### Manual send
 
-Open a post from **Recent blogs** (group → member → post) and tap a chat. The post is sent there in that
-chat's content mode (each button shows it); a translated chat reuses the translated archive when it
-exists, so no new AI request is made. ⭐ marks
-the chats its routing would use, and **My DM (preview)** sends it to you. Manual sends ignore both pause
+Open a post from **Recent blogs** (group → member → post) and tap a chat. Each button is the chat's name
+followed by its content mode, and the post is sent in that mode; a translated chat reuses the translated
+archive when it exists, so no new AI request is made. ⭐ marks the chats its routing sends it to, which
+are listed first, and **My DM (preview)**, listed last, sends it to you. Chats the bot cannot reach are
+left out, with a note saying how many routed ones that hides. Manual sends ignore both pause
 switches and the member's auto-translate setting (but not a translation block), do not use the quota, and are not recorded in
 `BroadcastStatus.JSON`, so you can send the same post again. Posts without saved HTML (shown as ∅)
 cannot be sent.

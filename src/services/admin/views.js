@@ -271,6 +271,13 @@ export async function memberView(groupIndex, hash) {
     const settings = getMemberSettings(groupName, member.name);
     const groupBlocked = isGroupTranslationBlocked(groupName);
     const routing = resolveDestinations(groupName, { ID: '', Name: member.name, Title: '' });
+    const directory = new Map((await getChatDirectory()).map(c => [c.chatId, c]));
+    const picked = new Set(settings.chatIds || []);
+    // A chat's name as Telegram shows it; the raw id only when the bot cannot see the chat.
+    const nameOf = (chatId) => {
+        const chat = directory.get(String(chatId));
+        return chat?.reachable ? escapeHtml(chatTitle(chat)) : `❌ <code>${escapeHtml(chatId)}</code> (unreachable)`;
+    };
 
     const lines = [
         `👤 <b>${escapeHtml(member.name)}</b> · ${escapeHtml(groupName)}`,
@@ -280,12 +287,11 @@ export async function memberView(groupIndex, hash) {
         `🚫 Translation block: <b>${settings.translationBlocked ? 'Blocked' : 'Not blocked'}</b>${groupBlocked ? ' (whole group blocked)' : ''}`,
         `🌐 Auto-translate: <b>${settings.autoTranslate ? 'On' : 'Off'}</b>`,
         `📦 Archive / backup: <b>${settings.archive ? 'On' : 'Off'}</b>`,
-        `📡 Chats picked here: ${settings.chatIds?.length ? settings.chatIds.map(c => `<code>${escapeHtml(c)}</code>`).join(', ') : 'none'} <i>(in addition to config.json)</i>`,
         '',
-        '<b>New posts currently go to</b>',
+        '<b>New posts go to</b>',
         ...(routing.length
-            ? routing.map(d => `• ${escapeHtml(d.label)} → <code>${escapeHtml(d.chatId)}</code> ${MODE_ICONS[d.mode]}`)
-            : ['• nowhere'])
+            ? routing.map(d => `• ${nameOf(d.chatId)} ${MODE_ICONS[d.mode]}${picked.has(String(d.chatId)) ? '' : ' <i>(config.json)</i>'}`)
+            : ['• nowhere yet. Tap 📡 Choose target chats.'])
     ];
     if (!settings.archive) lines.push('', '🗑 Archive off: new posts are not saved to blogContent/ and are skipped by the backfill.');
     if (!settings.autoTranslate) lines.push('', '⛔ Auto-translate off: posts are broadcast in Japanese and skipped by the backfill. Manual sends still translate.');
@@ -391,26 +397,49 @@ export function blogFromEntry(entry) {
 }
 
 /**
- * Chats a post can be sent to: its configured routes first (starred), then every
- * other known chat, then the owner's own DM as a preview target.
+ * Chats a post can be sent to, each named the way Telegram shows it: the chats
+ * its routing uses first (starred), then every other chat the bot can post to,
+ * then the owner's own DM as a preview. One entry per chat, whichever bot
+ * reaches it; chats the bot cannot reach right now are left out (and counted),
+ * since a send there would only fail.
+ *
+ * @returns {Promise<{targets: Array<object>, unreachableRouted: number}>}
  */
-export function getBlogTargets(groupName, blog) {
+export async function getBlogTargets(groupName, blog) {
+    const directory = new Map((await getChatDirectory()).map(c => [c.chatId, c]));
     const routed = resolveDestinations(groupName, blog).map(d => ({ ...d, routed: true }));
     const known = listKnownTargets(groupName).map(d => ({ ...d, routed: false }));
-    const dm = ADMIN_BOT_TOKEN && OWNER_USER_ID
-        ? [{ chatId: OWNER_USER_ID, botToken: ADMIN_BOT_TOKEN, label: 'My DM (preview)', routed: false, ...getFallbackSettings(groupName), mode: getChatSettings(OWNER_USER_ID).mode }]
-        : [];
 
     const seen = new Set();
     const targets = [];
-    for (const target of [...routed, ...known, ...dm]) {
-        const key = `${target.botToken}:${target.chatId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        targets.push({ ...target, hash: shortHash(key) });
+    let unreachableRouted = 0;
+    for (const target of [...routed, ...known]) {
+        const chatId = String(target.chatId);
+        if (seen.has(chatId)) continue;
+        seen.add(chatId);
+        const chat = directory.get(chatId);
+        if (!chat?.reachable) {
+            if (target.routed) unreachableRouted += 1;
+            continue;
+        }
+        targets.push({ ...target, name: chat.label, type: chat.type, hash: shortHash(`${target.botToken}:${chatId}`) });
     }
-    return targets;
+
+    // Routed chats first, then by name, so the list reads like Telegram's chat list.
+    targets.sort((a, b) => Number(b.routed) - Number(a.routed) || a.name.localeCompare(b.name));
+
+    if (ADMIN_BOT_TOKEN && OWNER_USER_ID && !seen.has(OWNER_USER_ID)) {
+        targets.push({
+            chatId: OWNER_USER_ID, botToken: ADMIN_BOT_TOKEN, label: 'My DM', name: 'My DM (preview)', type: 'private',
+            routed: false, ...getFallbackSettings(groupName), mode: getChatSettings(OWNER_USER_ID).mode,
+            hash: shortHash(`${ADMIN_BOT_TOKEN}:${OWNER_USER_ID}`)
+        });
+    }
+    return { targets, unreachableRouted };
 }
+
+/** "📢 My channel" — how a chat is named everywhere in the panel. */
+export const chatTitle = (target) => `${chatKindIcon(target.type)} ${target.name ?? target.label}`;
 
 export async function blogView(groupIndex, blogId, memberHash, page = 0) {
     const groupName = groupAt(groupIndex);
@@ -420,36 +449,38 @@ export async function blogView(groupIndex, blogId, memberHash, page = 0) {
     if (!entry) return { text: 'Blog not found.', reply_markup: { inline_keyboard: [back] } };
 
     const blog = blogFromEntry(entry);
-    const targets = getBlogTargets(groupName, blog);
+    const { targets, unreachableRouted } = await getBlogTargets(groupName, blog);
 
+    const archiveState = !entry.hasSource ? '∅ not archived'
+        : entry.translated ? '✅ archived and translated'
+        : '⏳ archived, not translated yet';
     const lines = [
         `📰 <b>${escapeHtml(entry.title || '(untitled)')}</b>`,
         `👤 ${escapeHtml(entry.name)} · ${escapeHtml(groupName)}`,
         `🕒 ${formatJstTimestamp(entry.dateTime) || 'unknown'} JST`
     ];
     if (entry.url) lines.push(`🔗 <a href="${escapeHtml(entry.url)}">Original post</a>`);
-    lines.push(
-        `Saved HTML: ${entry.hasSource ? 'yes' : 'no'} · Translated archive: ${entry.translated ? 'yes' : 'no'}`,
-        ''
-    );
+    lines.push(archiveState, '');
 
     const rows = [];
     if (!entry.hasSource) {
-        lines.push('This post has no saved HTML (archiving was off or it predates the archive), so it cannot be sent.');
+        lines.push('There is no saved copy of this post (archiving was off, or it predates the archive), so it cannot be sent.');
     } else if (!targets.length) {
-        lines.push('No chats are configured. Add targets to a member or to config/config.json.');
+        lines.push('No chat to send it to yet. Add the bot to a channel, or pick chats for a member.');
     } else {
-        if (isTranslationBlocked(groupName, entry.name)) {
-            lines.push('🚫 Translation is blocked for this group or member, so it is sent in Japanese.');
-        } else if (entry.translated) {
-            lines.push('🗂 The translated archive is reused, so sending needs no new AI request.');
-        }
-        lines.push(
-            'Tap a chat to send this post there, in that chat\'s content mode (🌐 translated · 🇯🇵 Japanese · 🖼 photos only). ⭐ = where its routing sends it. Manual sends ignore both pause switches and do not use the quota.'
-        );
+        lines.push('<b>Send to</b> — ⭐ chats this post is routed to');
+        lines.push('🌐 translated · 🇯🇵 Japanese · 🖼 photos only');
+        if (isTranslationBlocked(groupName, entry.name)) lines.push('🚫 Translation is blocked for this member, so translated chats get Japanese.');
         for (const target of targets.slice(0, MAX_TARGET_BUTTONS)) {
-            rows.push([button(`${target.routed ? '⭐' : '➡️'} ${MODE_ICONS[target.mode] || ''} ${truncate(target.label, 26)} · ${target.chatId}`, `bs:${groupIndex}:${entry.id}:${target.hash}`)]);
+            rows.push([button(
+                `${target.routed ? '⭐ ' : ''}${truncate(chatTitle(target), 30)} ${MODE_ICONS[target.mode] || ''}`,
+                `bs:${groupIndex}:${entry.id}:${target.hash}`
+            )]);
         }
+        lines.push('', '<i>Manual sends ignore the pause switches and do not use the quota.</i>');
+    }
+    if (unreachableRouted) {
+        lines.push('', `❌ ${unreachableRouted} routed chat(s) can't be reached right now and are not listed; see 📢 Chats.`);
     }
     rows.push(back);
 
@@ -548,6 +579,51 @@ export async function findChat(hash, options) {
     return (await getChatDirectory(options)).find(c => shortHash(c.chatId) === hash) || null;
 }
 
+/**
+ * What a chat receives, per group, from its enabled routes: the whole group, a
+ * list of members (picked here or in config.json), and/or config.json categories.
+ */
+function audienceOf(chat) {
+    const groups = new Map();
+    for (const route of chat.routes.filter(r => r.enabled)) {
+        if (!groups.has(route.groupName)) groups.set(route.groupName, { whole: false, members: new Set(), categories: [] });
+        const g = groups.get(route.groupName);
+        if (route.kind === 'group') g.whole = true;
+        else if (route.kind === 'category') g.categories.push(route.categoryName);
+        else if (route.memberName) g.members.add(route.memberName);
+    }
+    return groups;
+}
+
+/** "all Bokuao + 2 members", for the chat list buttons. */
+function audienceShort(chat) {
+    const groups = audienceOf(chat);
+    const whole = [...groups].filter(([, g]) => g.whole).map(([name]) => name);
+    const members = [...groups.values()].filter(g => !g.whole).reduce((n, g) => n + g.members.size, 0);
+    const categories = [...groups.values()].filter(g => !g.whole).reduce((n, g) => n + g.categories.length, 0);
+    const parts = [];
+    if (whole.length) parts.push(`all ${whole.join(', ')}`);
+    if (members) parts.push(`${members} member${members === 1 ? '' : 's'}`);
+    if (categories) parts.push(`${categories} categor${categories === 1 ? 'y' : 'ies'}`);
+    return parts.join(' + ') || 'nothing yet';
+}
+
+/** One line per group for the chat screen. */
+function audienceLines(chat) {
+    const lines = [];
+    for (const [groupName, g] of audienceOf(chat)) {
+        if (g.whole) {
+            lines.push(`• <b>${escapeHtml(groupName)}</b> — every member <i>(config.json)</i>`);
+            continue;
+        }
+        const parts = [];
+        if (g.members.size) parts.push([...g.members].map(escapeHtml).join(', '));
+        if (g.categories.length) parts.push(`category ${g.categories.map(escapeHtml).join(', ')} <i>(config.json)</i>`);
+        lines.push(`• <b>${escapeHtml(groupName)}</b> — ${parts.join('; ')}`);
+    }
+    return lines;
+}
+
 export async function chatsView(page, { fresh = false } = {}) {
     const chats = await getChatDirectory({ fresh });
     const pageCount = Math.max(1, Math.ceil(chats.length / CHATS_PER_PAGE));
@@ -555,7 +631,7 @@ export async function chatsView(page, { fresh = false } = {}) {
     const slice = chats.slice(current * CHATS_PER_PAGE, (current + 1) * CHATS_PER_PAGE);
 
     const rows = slice.map(c => [button(
-        `${chatStatusIcon(c)} ${chatKindIcon(c.type)} ${MODE_ICONS[c.mode]} ${truncate(c.label, 24)} · ${c.routes.length} route${c.routes.length === 1 ? '' : 's'}`,
+        `${chatStatusIcon(c)} ${truncate(chatTitle(c), 26)} ${MODE_ICONS[c.mode]} · ${audienceShort(c)}`,
         `cv:${shortHash(c.chatId)}`
     )]);
     if (pageCount > 1) rows.push(pageRow('ch', current, pageCount));
@@ -570,8 +646,8 @@ export async function chatsView(page, { fresh = false } = {}) {
         '🌐 translated · 🇯🇵 Japanese · 🖼 photos only',
         '',
         chats.length
-            ? 'Tap a chat for its routes and deliveries.'
-            : 'No chats yet. Add chat ids to config/config.json, set member targets, or add the admin bot to a channel as an admin.'
+            ? 'Tap a chat to choose what it receives and from whom.'
+            : 'No chats yet. Add the admin bot to a channel as an admin, pick chats for a member, or add chat ids to config/config.json.'
     ];
     if (ADMIN_BOT_TOKEN) {
         const name = await botName(ADMIN_BOT_TOKEN);
@@ -605,14 +681,14 @@ export async function chatView(hash, { fresh = false } = {}) {
 
     lines.push(`Delivered: ${fmt(chat.deliveries)} post(s)${chat.lastDeliveredAt ? ` · last ${formatJstTimestamp(chat.lastDeliveredAt)} JST` : ''}`);
     lines.push(`Content: <b>${modeLabel(chat.mode)}</b>${chat.modeIsDefault ? ' <i>(default)</i>' : ''}`);
-    lines.push('', '<b>Routes</b>');
-    lines.push(...(chat.routes.length
-        ? chat.routes.map(r => `• ${escapeHtml(r.label)}${r.enabled ? '' : ' <i>(disabled)</i>'}`)
-        : ['• none. Tap 👥 Members to pick whose posts it receives.']));
 
-    const memberCount = new Set(chat.routes
-        .filter(r => r.kind === 'admin' || r.kind === 'member')
-        .map(r => `${r.groupName}/${r.memberName}`)).size;
+    const receives = audienceLines(chat);
+    lines.push('', '<b>Receives posts from</b>');
+    lines.push(...(receives.length ? receives : ['• nobody yet. Tap 👥 Members to pick whose posts it receives.']));
+    const disabled = chat.routes.filter(r => !r.enabled).length;
+    if (disabled) lines.push(`<i>${disabled} more route(s) are switched off in config.json.</i>`);
+
+    const memberCount = [...audienceOf(chat).values()].reduce((n, g) => n + g.members.size, 0);
     const rows = [
         CHAT_MODES.map(mode => button(
             `${chat.mode === mode ? '● ' : ''}${modeLabel(mode)}`,

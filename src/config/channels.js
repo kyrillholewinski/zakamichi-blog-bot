@@ -183,7 +183,7 @@ function adminRoutes(config, groupName, memberName, chatIds) {
     }
 
     return [...byToken].map(([botToken, ids]) => ({
-        label: `${groupName}/${memberName} (admin)`,
+        label: `${groupName}/${memberName} (panel)`,
         botToken,
         chatIds: ids,
         translation: member?.translation || group?.translation || config.defaults.translation,
@@ -397,7 +397,7 @@ export function listRouteUsages() {
         }
         for (const category of group.categories) {
             for (const chatId of category.chatIds) {
-                usages.push({ chatId, botToken: category.botToken || group.botToken, label: `${groupName}/${category.name} (category)`, enabled: groupOn && category.enabled, kind: 'category', groupName });
+                usages.push({ chatId, botToken: category.botToken || group.botToken, label: `${groupName}/${category.name} (category)`, enabled: groupOn && category.enabled, kind: 'category', groupName, categoryName: category.name });
             }
         }
     }
@@ -407,7 +407,7 @@ export function listRouteUsages() {
         for (const { memberName, chatIds } of listMemberTargetOverrides(groupName)) {
             for (const route of adminRoutes(config, groupName, memberName, chatIds)) {
                 for (const chatId of route.chatIds) {
-                    usages.push({ chatId, botToken: route.botToken, label: `${groupName}/${memberName} (admin panel)`, enabled: config.enabled, kind: 'admin', groupName, memberName });
+                    usages.push({ chatId, botToken: route.botToken, label: `${groupName}/${memberName} (panel)`, enabled: config.enabled, kind: 'admin', groupName, memberName });
                 }
             }
         }

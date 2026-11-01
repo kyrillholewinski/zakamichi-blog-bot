@@ -11,7 +11,7 @@ import {
     chatsView, chatView, findChat, chatMemberGroupsView, chatMembersView, listGroupMembers,
     MODE_CODES, MODE_NAMES,
     recentGroupsView, recentMembersView, recentMemberBlogsView,
-    blogView, blogFromEntry, getBlogTargets, groupAt
+    blogView, blogFromEntry, getBlogTargets, chatTitle, groupAt
 } from './views.js';
 import { chatKindIcon } from './chat-directory.js';
 import {
@@ -63,20 +63,21 @@ const toast = (bot, callbackId, text, showAlert = false) =>
 // --- Manual translate + send ---
 
 async function runManualSend(bot, groupName, entry, target) {
-    const label = `${groupName}/${entry.id} → ${target.label} (${target.chatId})`;
+    const post = `“${escapeHtml(entry.title || entry.id)}” by ${escapeHtml(entry.name)}`;
+    const where = escapeHtml(chatTitle(target));
     try {
         const result = await broadcastBlog(groupName, blogFromEntry(entry), null, {
             destinations: [target],
             force: true,
             forceTranslate: true
         });
-        const ok = result.sent > 0;
-        await bot.sendMessage(OWNER_USER_ID,
-            `${ok ? '✅ Sent' : '❌ Failed to send'}: ${escapeHtml(entry.title || entry.id)}\n${escapeHtml(label)}`,
-            html);
+        const outcome = result.sent > 0 ? '✅ Sent'
+            : result.skipped > 0 ? '⏭ Skipped (photos-only chat, and this post has no photos):'
+            : '❌ Failed to send';
+        await bot.sendMessage(OWNER_USER_ID, `${outcome} ${post} → ${where}`, html);
     } catch (err) {
-        console.error(`[admin] Manual send failed for ${label}: ${err.message}`);
-        await bot.sendMessage(OWNER_USER_ID, `❌ Error while sending ${escapeHtml(label)}: ${escapeHtml(err.message)}`, html);
+        console.error(`[admin] Manual send of ${groupName}/${entry.id} to ${target.chatId} failed: ${err.message}`);
+        await bot.sendMessage(OWNER_USER_ID, `❌ Error sending ${post} → ${where}: ${escapeHtml(err.message)}`, html);
     } finally {
         manualJob = null;
     }
@@ -293,12 +294,13 @@ async function handleCallback(bot, query) {
             const entry = groupName ? (await getBlogIndex()).find(e => e.group === groupName && e.id === args[1]) : null;
             if (!entry?.hasSource) return toast(bot, query.id, 'This blog has no saved HTML.', true);
 
-            const destination = getBlogTargets(groupName, blogFromEntry(entry)).find(t => t.hash === args[2]);
-            if (!destination) return toast(bot, query.id, 'That chat is no longer configured.', true);
+            const { targets } = await getBlogTargets(groupName, blogFromEntry(entry));
+            const destination = targets.find(t => t.hash === args[2]);
+            if (!destination) return toast(bot, query.id, 'That chat is no longer available.', true);
 
             if (manualJob) return toast(bot, query.id, '⏳ A manual send is already running. Try again when it finishes.', true);
 
-            await toast(bot, query.id, `📤 Sending to ${destination.label}…`);
+            await toast(bot, query.id, `📤 Sending to ${destination.name}…`);
             manualJob = runManualSend(bot, groupName, entry, destination);
             return;
         }
@@ -395,7 +397,7 @@ async function handleMembership(bot, update) {
     if (!allowMembershipNotice()) return;
 
     const who = from && String(from.id) !== OWNER_USER_ID ? ` by ${escapeHtml(now.addedByName || 'someone')} (<code>${from.id}</code>)` : '';
-    const name = `${chatKindIcon(chat.type)} <b>${escapeHtml(now.title)}</b> <code>${escapeHtml(now.id)}</code>`;
+    const name = `${chatKindIcon(chat.type)} <b>${escapeHtml(now.title)}</b>`;
     let text;
     if (now.active) {
         text = `📢 Added to ${name}${who}. It is listed under /admin → 📢 Chats; route a member to it to start posting there.`;
