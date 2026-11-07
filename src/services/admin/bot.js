@@ -8,7 +8,7 @@ import { isOwnerUpdate, createRateLimiter } from './auth.js';
 import {
     mainView, statusView, quotaView, scheduleView,
     memberGroupsView, memberListView, memberView, memberTargetsView, findMember,
-    chatsView, chatView, findChat, chatMemberGroupsView, chatMembersView, listGroupMembers,
+    chatsView, chatView, chatRemoveConfirmView, findChat, chatMemberGroupsView, chatMembersView, listGroupMembers,
     MODE_CODES, MODE_NAMES,
     recentGroupsView, recentMembersView, recentMemberBlogsView,
     blogView, blogFromEntry, getBlogTargets, chatTitle, groupAt
@@ -21,7 +21,7 @@ import {
     getMemberSettings, updateMemberSettings,
     isGroupTranslationBlocked, setGroupTranslationBlocked,
     recordKnownChat, getKnownChat, forgetKnownChat,
-    setChatMode, setMemberTargetsChat
+    setChatMode, setMemberTargetsChat, removeChatBroadcast, restoreChatConfigRoutes
 } from '../admin-state.js';
 
 /**
@@ -127,6 +127,27 @@ async function handleCallback(bot, query) {
             forgetKnownChat(chat.chatId);
             await toast(bot, query.id, 'Forgotten');
             return show(bot, await chatsView(0), target);
+        }
+
+        case 'crm':
+            await toast(bot, query.id);
+            return show(bot, await chatRemoveConfirmView(args[0]), target);
+
+        case 'crx': {
+            const chat = await findChat(args[0]);
+            if (!chat) return toast(bot, query.id, 'That chat is no longer listed.', true);
+            const unticked = removeChatBroadcast(chat.chatId);
+            await toast(bot, query.id, `🛑 Broadcast removed from ${chat.label} (${unticked} member(s) unticked)`);
+            // A chat known only through the picks just removed leaves the list.
+            return show(bot, await findChat(args[0]) ? await chatView(args[0]) : await chatsView(0), target);
+        }
+
+        case 'cru': {
+            const chat = await findChat(args[0]);
+            if (!chat) return toast(bot, query.id, 'That chat is no longer listed.', true);
+            restoreChatConfigRoutes(chat.chatId);
+            await toast(bot, query.id, `↩️ config.json routes restored for ${chat.label}`);
+            return show(bot, await chatView(args[0]), target);
         }
 
         case 'cmo': {

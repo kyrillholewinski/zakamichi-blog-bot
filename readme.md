@@ -183,6 +183,8 @@ Telegram refuses polling and the log says so; remove the webhook first.
 ├─ 📢 Chats             every chat the bot broadcasts to → chat details
 │   ├─ 🌐 Translated · 🇯🇵 Japanese · 🖼 Photos only   what the chat receives
 │   ├─ 👥 Members       group → tick the members whose posts the chat receives
+│   ├─ 🛑 Remove broadcast   stop everything going to the chat (asks first)
+│   ├─ ↩️ Restore config.json routes   after a removal
 │   ├─ 🔄 Re-check      ask Telegram again (names are cached 10 minutes)
 │   └─ 🗑 Forget        for a chat the bot has left that nothing routes to
 ├─ 📰 Recent blogs      group → members (latest post first) → member's posts → pick a chat → send
@@ -252,6 +254,16 @@ the members of a group, most recently active first:
 
 A category route in `config.json` also sends its matching posts, which the screen notes.
 
+#### Removing broadcast from a chat
+
+**📢 Chats → chat → 🛑 Remove broadcast** stops everything going to a chat, after asking you to confirm:
+
+- every member picked for the chat is unticked (to undo this, tick them again);
+- `config.json` routes into the chat are blocked, without changing the file. **↩️ Restore config.json routes** on the chat's screen lifts the block;
+- posts already in the queue no longer go there.
+
+The bot stays in the chat, its content mode is kept, you can still send it a post by hand, and ticking a member afterwards works as usual. The block stays on the chat until you restore it, including for routes added to `config.json` later.
+
 ### Manual send
 
 Open a post from **Recent blogs** (group → member → post) and tap a chat. Each button is the chat's name
@@ -292,6 +304,7 @@ translation on archiving):
 - **Skips:** posts of members with auto-translate or archiving off, blocked groups and members, and
   posts that failed 3 times.
 - **Stops** when the quota runs out, translation is paused, or the 08:00 JST polling window opens.
+- **Out of Gemini credits** (a `402` from Gemini): it stops at once, without using quota or counting a failure against the post. The next cycle tries one post again, so it resumes by itself after a top-up. **⏱ Schedule** shows this as the reason it stopped.
 
 "Translated" in the status view means a `blogContent_TC/` copy exists. "Pending" means saved HTML
 without one.
@@ -432,7 +445,8 @@ caption is sent as text so the post is still announced.
   },
   "blockedGroups": ["Bokuao"],                       // groups whose translation is blocked
   "backfillFailures": { "Hinatazaka46/104023": 1 },  // posts are skipped after 3
-  "chatSettings": { "-1001234567890": { "mode": "photos" } },   // translated | japanese | photos
+  // mode: translated | japanese | photos; configBlocked: broadcast was removed from the chat
+  "chatSettings": { "-1001234567890": { "mode": "photos", "configBlocked": true } },
   "knownChats": {                                    // chats the admin bot was added to
     "-1001234567890": { "id": "-1001234567890", "title": "My channel", "type": "channel",
                         "status": "administrator", "canPost": true, "addedBy": 111 }

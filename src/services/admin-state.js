@@ -130,6 +130,14 @@ export function tryConsumeQuota() {
     return true;
 }
 
+/** Gives back a unit reserved by tryConsumeQuota for an attempt that should not count. */
+export function refundQuota() {
+    rolloverQuota();
+    if (state.quota.used === 0) return;
+    state.quota.used -= 1;
+    persist();
+}
+
 export function setDailyLimit(limit) {
     state.quota.dailyLimit = Math.max(0, Math.min(10000, Math.round(Number(limit) || 0)));
     persist();
@@ -292,7 +300,40 @@ export const DEFAULT_CHAT_MODE = 'translated';
 export function getChatSettings(chatId) {
     const stored = state.chatSettings[String(chatId)] || {};
     const mode = CHAT_MODES.includes(stored.mode) ? stored.mode : DEFAULT_CHAT_MODE;
-    return { mode, modeIsDefault: !CHAT_MODES.includes(stored.mode) };
+    return { mode, modeIsDefault: !CHAT_MODES.includes(stored.mode), configBlocked: stored.configBlocked === true };
+}
+
+/**
+ * Stops broadcasts to a chat: unticks every member picked for it and, because
+ * the panel cannot edit config.json, blocks that file's routes into the chat.
+ * Ticking a member afterwards works as usual; only the config.json routes stay
+ * blocked until restoreChatConfigRoutes().
+ *
+ * @returns {number} How many members were unticked.
+ */
+export function removeChatBroadcast(chatId) {
+    const key = String(chatId);
+    let unticked = 0;
+    for (const [memberId, settings] of Object.entries(state.members)) {
+        if (!Array.isArray(settings.chatIds) || !settings.chatIds.map(String).includes(key)) continue;
+        unticked += 1;
+        const remaining = settings.chatIds.map(String).filter(id => id !== key);
+        const { chatIds, ...rest } = settings;
+        const next = remaining.length ? { ...rest, chatIds: remaining } : rest;
+        if (Object.keys(next).length) state.members[memberId] = next;
+        else delete state.members[memberId];
+    }
+    state.chatSettings[key] = { ...state.chatSettings[key], configBlocked: true };
+    persist();
+    return unticked;
+}
+
+export function restoreChatConfigRoutes(chatId) {
+    const key = String(chatId);
+    const { configBlocked, ...rest } = state.chatSettings[key] || {};
+    if (Object.keys(rest).length) state.chatSettings[key] = rest;
+    else delete state.chatSettings[key];
+    persist();
 }
 
 /** Sets a chat's content mode; null returns it to the default. */

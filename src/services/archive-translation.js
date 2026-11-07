@@ -72,9 +72,11 @@ function splitTitle(output) {
  * @param {string} [post.title]
  * @param {string} post.html - Original article HTML.
  * @param {string} [source] - What produced it ('crawl' | 'backfill'), kept in the sidecar.
+ * @param {object} [options]
+ * @param {boolean} [options.throwOnNoCredits] - Throw TranslationCreditsError instead of returning null when Gemini credits are used up.
  * @returns {Promise<{title: string|null, html: string, targetLanguage: string}|null>} Null on failure.
  */
-export async function translateAndArchive({ group, id, name, title, html }, source = 'crawl') {
+export async function translateAndArchive({ group, id, name, title, html }, source = 'crawl', { throwOnNoCredits = false } = {}) {
     if (!html) return null;
 
     const groupConfig = getGroupConfig(group);
@@ -88,7 +90,8 @@ export async function translateAndArchive({ group, id, name, title, html }, sour
         preserveHtml: true,
         glossary: groupConfig?.glossary,
         targetLanguage,
-        thinkingLevel: groupConfig?.translation.thinking_level
+        thinkingLevel: groupConfig?.translation.thinking_level,
+        throwOnNoCredits
     });
     if (!output) return null;
 

@@ -16,6 +16,21 @@ const geminiModels = [
 
 export const DEFAULT_TARGET_LANGUAGE = 'Traditional Chinese (Taiwan)';
 
+// Gemini answers 402 when the account's prepaid credits are used up.
+const NO_CREDITS_STATUS = 402;
+
+/**
+ * Thrown instead of returning null when the caller passes `throwOnNoCredits`,
+ * for callers that must tell "out of credits" (nothing wrong with the post)
+ * from a failed translation.
+ */
+export class TranslationCreditsError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'TranslationCreditsError';
+    }
+}
+
 // Maps abstract thinking levels to Gemini thinking budgets (reasoning tokens).
 // Values are valid across the whole retry chain: gemini-2.5-pro requires >= 128,
 // flash-lite requires 0 or >= 512.
@@ -136,7 +151,8 @@ async function translateWithGemini(text, member, group, options = {}) {
         return null;
     }
 
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    // SDK 3 defaults to the v1 API; preview models and these request options are known to work on v1beta.
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY, apiVersion: 'v1beta' });
 
     for (const modelName of models) {
         for (let attempt = 1; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
@@ -158,6 +174,12 @@ async function translateWithGemini(text, member, group, options = {}) {
                 return output;
             } catch (error) {
                 const status = error.status;
+                // Credits belong to the account, so every other model would fail the same way.
+                if (status === NO_CREDITS_STATUS) {
+                    console.error(`❌ Gemini credits are used up (${modelName}): ${error.message}`);
+                    if (options.throwOnNoCredits) throw new TranslationCreditsError(error.message);
+                    return null;
+                }
                 if (RETRYABLE_STATUSES.has(status) && attempt < MAX_RATE_LIMIT_RETRIES) {
                     console.warn(`⏳ ${modelName} unavailable (${status}). Retry ${attempt}/${MAX_RATE_LIMIT_RETRIES - 1}...`);
                     await sleep(30000);
@@ -179,7 +201,7 @@ async function translateWithGemini(text, member, group, options = {}) {
  * @param {string} text
  * @param {string} member - Author name, used for context.
  * @param {string} group - Idol group name, used for context.
- * @param {object} [options] - { preserveHtml, segmented, glossary, targetLanguage, thinkingLevel }
+ * @param {object} [options] - { preserveHtml, segmented, glossary, targetLanguage, thinkingLevel, throwOnNoCredits }
  */
 export async function translateMessage(text, member, group, options = {}) {
     if (!text) return null;

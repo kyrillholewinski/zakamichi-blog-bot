@@ -276,25 +276,28 @@ export function resolveDestinations(groupName, blog) {
 
     if (!group || !group.enabled) return routesToDestinations(routes, group?.glossary || {});
 
+    // A chat whose broadcast was removed in the panel is skipped by config.json routes.
+    const pushConfigRoute = (route) => {
+        const chatIds = route.chatIds.filter(chatId => !getChatSettings(chatId).configBlocked);
+        if (chatIds.length) routes.push({ ...route, chatIds });
+    };
+
     const member = group.members.find(m => m.name && m.name === memberName);
     if (member) {
         // An explicitly disabled member is muted everywhere config.json routes it.
         if (!member.enabled) return routesToDestinations(routes, group.glossary);
-        if (member.chatIds.length) {
-            routes.push({
-                label: `${groupName}/${member.name}`,
-                botToken: member.botToken || group.botToken,
-                chatIds: member.chatIds,
-                translation: member.translation,
-                message: member.message
-            });
-        }
+        pushConfigRoute({
+            label: `${groupName}/${member.name}`,
+            botToken: member.botToken || group.botToken,
+            chatIds: member.chatIds,
+            translation: member.translation,
+            message: member.message
+        });
     }
 
     for (const category of group.categories) {
-        if (!category.enabled || !category.chatIds.length) continue;
-        if (!matchesCategory(category, blog)) continue;
-        routes.push({
+        if (!category.enabled || !matchesCategory(category, blog)) continue;
+        pushConfigRoute({
             label: `${groupName}/${category.name}`,
             botToken: category.botToken || group.botToken,
             chatIds: category.chatIds,
@@ -303,15 +306,13 @@ export function resolveDestinations(groupName, blog) {
         });
     }
 
-    if (group.chatIds.length) {
-        routes.push({
-            label: groupName,
-            botToken: group.botToken,
-            chatIds: group.chatIds,
-            translation: group.translation,
-            message: group.message
-        });
-    }
+    pushConfigRoute({
+        label: groupName,
+        botToken: group.botToken,
+        chatIds: group.chatIds,
+        translation: group.translation,
+        message: group.message
+    });
 
     return routesToDestinations(routes, group.glossary);
 }
@@ -400,6 +401,13 @@ export function listRouteUsages() {
                 usages.push({ chatId, botToken: category.botToken || group.botToken, label: `${groupName}/${category.name} (category)`, enabled: groupOn && category.enabled, kind: 'category', groupName, categoryName: category.name });
             }
         }
+    }
+
+    // Config routes into a chat whose broadcast was removed in the panel do not fire.
+    for (const usage of usages) {
+        if (!getChatSettings(usage.chatId).configBlocked) continue;
+        usage.blocked = true;
+        usage.enabled = false;
     }
 
     const groupNames = new Set([...config.groups.keys(), ...Object.values(GROUPS)]);

@@ -3,11 +3,13 @@ import path from 'path';
 import { PATHS, GROUPS } from '../config/constants.js';
 import { loadBlogStatus } from '../utils/file-system.js';
 import { translateAndArchive } from './archive-translation.js';
+import { TranslationCreditsError } from './translate.js';
 import {
     isTranslationPaused,
     getMemberSettings,
     isTranslationBlocked,
     tryConsumeQuota,
+    refundQuota,
     getQuota,
     getBackfillFailures,
     recordBackfillFailure,
@@ -111,7 +113,8 @@ export async function getBackfillQueue() {
  *
  * Every attempt costs one unit of quota, including failures, since the API call
  * was made either way. A post that keeps failing is skipped after
- * MAX_BACKFILL_FAILURES attempts.
+ * MAX_BACKFILL_FAILURES attempts. Running out of Gemini credits is not a failed
+ * attempt: the run stops there, with the quota and the post left as they were.
  *
  * @param {object} [options]
  * @param {() => boolean} [options.shouldStop] - Checked between posts (e.g. the polling window opened).
@@ -151,13 +154,25 @@ export async function runBackfill({ shouldStop = () => false } = {}) {
             continue;
         }
 
-        const archived = await translateAndArchive({
-            group: entry.group,
-            id: entry.id,
-            name: entry.name,
-            title: entry.title,
-            html
-        }, 'backfill');
+        let archived;
+        try {
+            archived = await translateAndArchive({
+                group: entry.group,
+                id: entry.id,
+                name: entry.name,
+                title: entry.title,
+                html
+            }, 'backfill', { throwOnNoCredits: true });
+        } catch (err) {
+            if (!(err instanceof TranslationCreditsError)) throw err;
+            // Nothing is wrong with the post, and every other post would fail the
+            // same way: give the unit back, leave the post untouched and stop. The
+            // next cycle tries one post again, so this ends once credits are topped up.
+            refundQuota();
+            result.stopReason = 'credits';
+            console.warn('🪙 Backfill stopped: Gemini credits are used up. No quota was used; it retries next cycle.');
+            break;
+        }
 
         if (!archived) {
             recordBackfillFailure(entry.group, entry.id);

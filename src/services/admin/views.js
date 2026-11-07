@@ -30,6 +30,7 @@ import {
  *   sc                       crawl / backfill schedule and last runs
  *   ch:<page>                chat directory
  *   cv|cr|cf:<chat>          chat detail, re-check it, forget it
+ *   crm|crx|cru:<chat>       remove the chat's broadcast: confirm, do it, restore config.json routes
  *   cmo:<chat>:<t|j|p|d>     set the chat's content mode (translated / japanese / photos / default)
  *   cm:<chat>                the chat's members: pick a group
  *   cmg:<chat>:<g>:<page>    the chat's members in one group
@@ -176,7 +177,7 @@ export function quotaView() {
         `Used today (${date} UTC): <b>${used}</b> · ${remaining} left`,
         `Resets at 00:00 UTC, in ${formatDuration(msUntilNextUtcMidnight())}.`,
         '',
-        'The backfill translates archived blogs newest first. Every attempt, including a failed one, uses one unit. Live broadcasts and manual sends do not use the quota.'
+        'The backfill translates archived blogs newest first. Every attempt, including a failed one, uses one unit, except when Gemini credits are used up: then it stops without using any. Live broadcasts and manual sends do not use the quota.'
     ].join('\n');
 
     return {
@@ -510,7 +511,7 @@ function windowState(window, now) {
         : `⏸ next ${formatWhen(nextBoundary(window, now))}`;
 }
 
-const STOP_REASONS = { done: 'backlog empty', quota: 'quota used up', paused: 'translation paused', window: 'crawl window opened' };
+const STOP_REASONS = { done: 'backlog empty', quota: 'quota used up', paused: 'translation paused', window: 'crawl window opened', credits: '🪙 Gemini credits used up, top up to resume' };
 
 export function scheduleView(now = new Date()) {
     const activity = getActivity();
@@ -685,10 +686,13 @@ export async function chatView(hash, { fresh = false } = {}) {
     const receives = audienceLines(chat);
     lines.push('', '<b>Receives posts from</b>');
     lines.push(...(receives.length ? receives : ['• nobody yet. Tap 👥 Members to pick whose posts it receives.']));
-    const disabled = chat.routes.filter(r => !r.enabled).length;
+    const disabled = chat.routes.filter(r => !r.enabled && !r.blocked).length;
     if (disabled) lines.push(`<i>${disabled} more route(s) are switched off in config.json.</i>`);
+    const blockedRoutes = chat.routes.filter(r => r.blocked).length;
+    if (blockedRoutes) lines.push(`🛑 ${blockedRoutes} config.json route(s) blocked: broadcast was removed from this chat.`);
 
-    const memberCount = [...audienceOf(chat).values()].reduce((n, g) => n + g.members.size, 0);
+    const audience = audienceOf(chat);
+    const memberCount = [...audience.values()].reduce((n, g) => n + g.members.size, 0);
     const rows = [
         CHAT_MODES.map(mode => button(
             `${chat.mode === mode ? '● ' : ''}${modeLabel(mode)}`,
@@ -697,9 +701,35 @@ export async function chatView(hash, { fresh = false } = {}) {
         [button(`👥 Members (${memberCount})`, `cm:${hash}`)],
         [button('🔄 Re-check', `cr:${hash}`)]
     ];
+    if (audience.size) rows.push([button('🛑 Remove broadcast', `crm:${hash}`)]);
+    if (blockedRoutes) rows.push([button('↩️ Restore config.json routes', `cru:${hash}`)]);
     if (chat.joined && !chat.joined.active && !chat.routes.length) rows.push([button('🗑 Forget this chat', `cf:${hash}`)]);
     rows.push(backRow('ch:0', '◀ Chats'));
     return { text: lines.join('\n'), reply_markup: { inline_keyboard: rows } };
+}
+
+/** Confirmation before a chat stops receiving broadcasts; nothing changes until "Yes". */
+export async function chatRemoveConfirmView(hash) {
+    const chat = await findChat(hash);
+    if (!chat) return { text: 'Chat not found. It may no longer be routed or known.', reply_markup: { inline_keyboard: [backRow('ch:0', '◀ Chats')] } };
+
+    const lines = [
+        `🛑 <b>Remove broadcast from ${escapeHtml(chatTitle(chat))}?</b>`,
+        '',
+        'It stops receiving posts from:',
+        ...audienceLines(chat),
+        '',
+        'Members picked for this chat are unticked; you would have to tick them again to undo this.'
+    ];
+    if (chat.routes.some(r => r.kind !== 'admin')) {
+        lines.push('config.json routes into this chat are blocked, without changing the file. You can restore them from this chat\'s screen.');
+    }
+    lines.push('', 'Posts already queued will not go here. The bot stays in the chat, and you can still send it a post by hand.');
+
+    return {
+        text: lines.join('\n'),
+        reply_markup: { inline_keyboard: [[button('🛑 Yes, remove', `crx:${hash}`), button('Cancel', `cv:${hash}`)]] }
+    };
 }
 
 // --- Member target picker ---

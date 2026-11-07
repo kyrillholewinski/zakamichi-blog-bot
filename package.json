@@ -21,15 +21,13 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@google/genai": "^2.31.0",
-    "archiver": "^8.0.0",
-    "axios": "^1.20.0",
+    "@google/genai": "^3.0.0",
+    "axios": "^1.21.0",
     "form-data": "^4.0.6",
-    "node-html-parser": "^9.0.5",
+    "node-html-parser": "^9.0.7",
     "p-limit": "^7.3.3"
   },
   "allowScripts": {
-    "@google/genai@2.31.0": true,
     "protobufjs@7.6.6": true
   }
 }
