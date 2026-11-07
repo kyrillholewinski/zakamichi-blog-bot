@@ -151,8 +151,7 @@ async function translateWithGemini(text, member, group, options = {}) {
         return null;
     }
 
-    // SDK 3 defaults to the v1 API; preview models and these request options are known to work on v1beta.
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY, apiVersion: 'v1beta' });
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
     for (const modelName of models) {
         for (let attempt = 1; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
